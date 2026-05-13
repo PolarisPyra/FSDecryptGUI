@@ -5,6 +5,8 @@ Desktop Electron GUI for extracting fscrypt APP, Option, and VHD chain contents.
 ## Use
 
 ```sh
+corepack enable
+corepack prepare pnpm@10.18.0 --activate
 pnpm install
 pnpm dev
 ```
@@ -33,3 +35,30 @@ pnpm dist
   - Linux: `~/.config/fsdecryptGUI/config.yaml`
   - macOS: `~/Library/Application Support/fsdecryptGUI/config.yaml`
   - Windows: `%APPDATA%\\fsdecryptGUI\\config.yaml`
+
+## Troubleshooting
+
+### `ENOENT: no such file or directory, uv_cwd`
+
+This is a pnpm/Node startup error that happens before the app is loaded. It means
+the terminal's current folder was deleted, moved, or renamed while the terminal
+was still open.
+
+Open a new terminal, then enter the project from a real existing folder:
+
+```sh
+cd ~
+test -d ~/Downloads/FSDecryptGUI/FSDecryptGUI-main
+cd ~/Downloads/FSDecryptGUI/FSDecryptGUI-main
+pwd -P
+pnpm install
+pnpm dev
+```
+
+If the `test -d` command fails, extract or clone the project again and `cd` into
+the newly created folder before running pnpm.
+
+### Port 5173 is already in use
+
+The dev app uses Vite on `127.0.0.1:5173`. Stop the other dev server using that
+port, then run `pnpm dev` again.
