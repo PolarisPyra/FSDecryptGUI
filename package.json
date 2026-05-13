@@ -1,0 +1,63 @@
+{
+	"name": "fsdecrypt-gui",
+	"private": true,
+	"version": "0.1.0",
+	"description": "Desktop GUI for extracting fscrypt APP, option, and VHD chain contents.",
+	"author": "PolarisPyra",
+	"type": "module",
+	"main": "dist-electron/main.js",
+	"scripts": {
+		"dev": "concurrently \"vite --host 127.0.0.1\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on dist-electron/main.js http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+		"build": "node scripts/build-electron.mjs && vite build",
+		"typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+		"package": "pnpm build && electron-builder --dir",
+		"dist": "pnpm build && electron-builder"
+	},
+	"dependencies": {
+		"aes-js": "^3.1.2",
+		"lucide-react": "^0.475.0",
+		"react": "^19.1.1",
+		"react-dom": "^19.1.1",
+		"yaml": "^2.9.0"
+	},
+	"devDependencies": {
+		"@types/aes-js": "^3.1.4",
+		"@types/node": "^24.12.2",
+		"@types/react": "^19.1.13",
+		"@types/react-dom": "^19.1.9",
+		"@vitejs/plugin-react": "^4.7.0",
+		"concurrently": "^9.2.1",
+		"cross-env": "^10.1.0",
+		"electron": "^39.2.6",
+		"electron-builder": "^26.0.12",
+		"typescript": "^5.7.3",
+		"vite": "^6.3.6",
+		"wait-on": "^9.0.3"
+	},
+	"build": {
+		"appId": "dev.polaris.fsdecryptgui",
+		"productName": "fsdecryptGUI",
+		"files": [
+			"dist",
+			"dist-electron",
+			"package.json"
+		],
+		"directories": {
+			"output": "release"
+		},
+		"linux": {
+			"target": [
+				"AppImage",
+				"dir"
+			],
+			"category": "Utility"
+		},
+		"win": {
+			"target": "nsis"
+		},
+		"mac": {
+			"target": "dmg"
+		}
+	},
+	"packageManager": "pnpm@10.18.0"
+}
