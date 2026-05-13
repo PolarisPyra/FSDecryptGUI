@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from "electron"
-import { mkdir, open, rm, stat, writeFile } from "node:fs/promises"
+import { createDecipheriv } from "node:crypto"
+import { mkdir, open, rm, stat, type FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -14,8 +15,19 @@ type PickFileOptions = {
 type WriteFileRequest = {
 	rootPath: string
 	segments: string[]
-	chunk: ArrayBuffer
+	chunk: ArrayBuffer | Uint8Array
 	append: boolean
+}
+
+type DecryptFscryptRangeRequest = {
+	filePath: string
+	dataOffset: number
+	outputSize: number
+	keyHex: string
+	ivHex: string
+	offset: number
+	length: number
+	pageSize: number
 }
 
 type OutputFolderRequest = {
@@ -23,8 +35,28 @@ type OutputFolderRequest = {
 	segments: string[]
 }
 
+function hexBytes(hex: string) {
+	return Buffer.from(hex, "hex")
+}
+
+function calculatePageIv(fileOffset: number, fileIv: Buffer) {
+	const pageIv = Buffer.allocUnsafe(16)
+	let low = BigInt(fileOffset)
+
+	for (let index = 0; index < 16; index++) {
+		const shift = BigInt(8 * (index % 8))
+		pageIv[index] = fileIv[index] ^ Number((low >> shift) & 0xffn)
+	}
+
+	return pageIv
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
+const inputHandles = new Map<string, Promise<FileHandle>>()
+const outputHandles = new Map<string, Promise<FileHandle>>()
+const ensuredOutputDirectories = new Set<string>()
+const fscryptKeys = new Map<string, Buffer>()
 
 app.setName("fsdecryptGUI")
 
@@ -69,7 +101,81 @@ async function pathExists(target: string) {
 	}
 }
 
+function inputHandle(filePath: string) {
+	const resolved = path.resolve(filePath)
+	let handle = inputHandles.get(resolved)
+	if (!handle) {
+		handle = open(resolved, "r").catch(error => {
+			inputHandles.delete(resolved)
+			throw error
+		})
+		inputHandles.set(resolved, handle)
+	}
+
+	return handle
+}
+
+async function closeInputHandles() {
+	const handles = [...inputHandles.values()]
+	inputHandles.clear()
+	await Promise.allSettled(handles.map(async handle => (await handle).close()))
+}
+
+async function closeOutputHandles() {
+	const handles = [...outputHandles.values()]
+	outputHandles.clear()
+	await Promise.allSettled(handles.map(async handle => (await handle).close()))
+}
+
+async function closeOutputHandle(target: string) {
+	const resolved = path.resolve(target)
+	const handle = outputHandles.get(resolved)
+	if (!handle) {
+		return
+	}
+
+	outputHandles.delete(resolved)
+	await (await handle).close()
+}
+
+function openOutputHandle(target: string, flags: "a" | "w") {
+	const resolved = path.resolve(target)
+	const handle = open(resolved, flags).catch(error => {
+		outputHandles.delete(resolved)
+		throw error
+	})
+	outputHandles.set(resolved, handle)
+	return handle
+}
+
+function cachedKey(hex: string) {
+	let key = fscryptKeys.get(hex)
+	if (!key) {
+		key = hexBytes(hex)
+		fscryptKeys.set(hex, key)
+	}
+	return key
+}
+
+function chunkBuffer(chunk: ArrayBuffer | Uint8Array) {
+	if (chunk instanceof ArrayBuffer) {
+		return Buffer.from(chunk)
+	}
+	return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+}
+
+async function ensureOutputDirectory(target: string) {
+	if (ensuredOutputDirectories.has(target)) {
+		return
+	}
+
+	await mkdir(target, { recursive: true })
+	ensuredOutputDirectories.add(target)
+}
+
 async function prepareOutputFolder(window: BrowserWindow | undefined, target: string) {
+	await closeOutputHandles()
+	ensuredOutputDirectories.clear()
 	if (!(await pathExists(target))) {
 		await mkdir(target, { recursive: true })
 		return
@@ -251,30 +357,90 @@ ipcMain.handle("fs:openOutputFolder", async (_event, request: OutputFolderReques
 })
 
 ipcMain.handle("fs:readRange", async (_event, filePath: string, offset: number, length: number) => {
-	const handle = await open(filePath, "r")
-	try {
-		const buffer = Buffer.alloc(length)
-		const { bytesRead } = await handle.read(buffer, 0, length, offset)
-		return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + bytesRead)
-	} finally {
-		await handle.close()
+	const handle = await inputHandle(filePath)
+	const buffer = Buffer.allocUnsafe(length)
+	const { bytesRead } = await handle.read(buffer, 0, length, offset)
+	return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + bytesRead)
+})
+
+ipcMain.handle("fs:decryptFscryptRange", async (_event, request: DecryptFscryptRangeRequest) => {
+	if (request.offset < 0 || request.length < 0 || request.offset > request.outputSize) {
+		throw new Error(`Invalid plaintext read ${request.offset}+${request.length}`)
 	}
+
+	const cappedLength = Math.min(request.length, request.outputSize - request.offset)
+	if (cappedLength <= 0) {
+		return new ArrayBuffer(0)
+	}
+
+	const firstPageOffset = Math.floor(request.offset / request.pageSize) * request.pageSize
+	const lastPageOffset = Math.ceil((request.offset + cappedLength) / request.pageSize) * request.pageSize
+	const encryptedLength = Math.min(lastPageOffset, request.outputSize) - firstPageOffset
+	if (encryptedLength % 16 !== 0) {
+		throw new Error("Encrypted range is not AES block aligned")
+	}
+
+	const handle = await inputHandle(request.filePath)
+	const encrypted = Buffer.allocUnsafe(encryptedLength)
+	const { bytesRead } = await handle.read(encrypted, 0, encryptedLength, request.dataOffset + firstPageOffset)
+	const key = cachedKey(request.keyHex)
+	const fileIv = hexBytes(request.ivHex)
+	const decrypted = Buffer.allocUnsafe(bytesRead)
+
+	for (let pageOffset = 0; pageOffset < bytesRead; pageOffset += request.pageSize) {
+		const encryptedPage = encrypted.subarray(pageOffset, Math.min(bytesRead, pageOffset + request.pageSize))
+		const decipher = createDecipheriv("aes-128-cbc", key, calculatePageIv(firstPageOffset + pageOffset, fileIv))
+		decipher.setAutoPadding(false)
+		decipher.update(encryptedPage).copy(decrypted, pageOffset)
+		decipher.final()
+	}
+
+	const sliceStart = request.offset - firstPageOffset
+	const sliceEnd = sliceStart + cappedLength
+	return decrypted.buffer.slice(decrypted.byteOffset + sliceStart, decrypted.byteOffset + sliceEnd)
 })
 
 ipcMain.handle("fs:ensureDirectory", async (_event, rootPath: string, segments: string[]) => {
 	const target = safeOutputPath(rootPath, segments)
-	await mkdir(target, { recursive: true })
+	await ensureOutputDirectory(target)
 })
 
 ipcMain.handle("fs:writeFileChunk", async (_event, request: WriteFileRequest) => {
 	const target = safeOutputPath(request.rootPath, request.segments)
-	await mkdir(path.dirname(target), { recursive: true })
-	await writeFile(target, Buffer.from(request.chunk), { flag: request.append ? "a" : "w" })
+	await ensureOutputDirectory(path.dirname(target))
+	const resolved = path.resolve(target)
+
+	if (!request.append) {
+		await closeOutputHandle(resolved)
+		openOutputHandle(resolved, "w")
+	}
+
+	let handle = outputHandles.get(resolved)
+	if (!handle) {
+		handle = openOutputHandle(resolved, "a")
+	}
+
+	await (await handle).write(chunkBuffer(request.chunk))
+})
+
+ipcMain.handle("fs:closeOutputFile", async (_event, request: OutputFolderRequest) => {
+	await closeOutputHandle(safeOutputPath(request.rootPath, request.segments))
+})
+
+ipcMain.handle("fs:removeOutputPath", async (_event, request: OutputFolderRequest) => {
+	const target = safeOutputPath(request.rootPath, request.segments)
+	await closeOutputHandle(target)
+	await rm(target, { recursive: true, force: true })
 })
 
 app.whenReady().then(() => {
 	installMenu()
 	return createWindow()
+})
+
+app.on("before-quit", () => {
+	void closeInputHandles()
+	void closeOutputHandles()
 })
 
 app.on("window-all-closed", () => {

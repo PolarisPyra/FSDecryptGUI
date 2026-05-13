@@ -17,10 +17,13 @@ export type ElectronApi = {
 	openConfigFolder: () => Promise<void>
 	onConfigChanged: (callback: (config: RendererConfig) => void) => () => void
 	readRange: (filePath: string, offset: number, length: number) => Promise<ArrayBuffer>
+	decryptFscryptRange: (request: DecryptFscryptRangeRequest) => Promise<ArrayBuffer>
 	ensureDirectory: (rootPath: string, segments: string[]) => Promise<void>
 	prepareOutputFolder: (rootPath: string, segments: string[]) => Promise<void>
 	openOutputFolder: (rootPath: string, segments: string[]) => Promise<void>
 	writeFileChunk: (rootPath: string, segments: string[], chunk: Uint8Array, append: boolean) => Promise<void>
+	closeOutputFile: (rootPath: string, segments: string[]) => Promise<void>
+	removeOutputPath: (rootPath: string, segments: string[]) => Promise<void>
 }
 
 export type RendererConfig = {
@@ -34,6 +37,17 @@ export type ConfigPatch = {
 	keyFilePath?: string | null
 }
 
+export type DecryptFscryptRangeRequest = {
+	filePath: string
+	dataOffset: number
+	outputSize: number
+	keyHex: string
+	ivHex: string
+	offset: number
+	length: number
+	pageSize: number
+}
+
 declare global {
 	interface Window {
 		fsdecryptGUI: ElectronApi
@@ -44,6 +58,8 @@ export function byteSourceFromPickedFile(file: PickedFile): ReadableByteSource {
 	return {
 		name: file.name,
 		size: file.size,
-		read: async (offset, length) => new Uint8Array(await window.fsdecryptGUI.readRange(file.path, offset, length))
+		read: async (offset, length) => new Uint8Array(await window.fsdecryptGUI.readRange(file.path, offset, length)),
+		decryptFscryptRange: async request =>
+			new Uint8Array(await window.fsdecryptGUI.decryptFscryptRange({ ...request, filePath: file.path }))
 	}
 }

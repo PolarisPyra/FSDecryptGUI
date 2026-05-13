@@ -369,12 +369,16 @@ export async function openFscryptSource(
 		throw new Error("Missing file IV")
 	}
 
-	const fileIv = hexToBytes(keys.iv)
-	const decryptWorkers = getDecryptWorkerCount()
+	const ivHex = keys.iv
+	const fileIv = hexToBytes(ivHex)
+	const nativeDecrypt = Boolean(source.decryptFscryptRange)
+	const decryptWorkers = nativeDecrypt ? 0 : getDecryptWorkerCount()
 	onLog?.(
-		decryptWorkers > 0
-			? `Using ${decryptWorkers} decrypt worker(s) for large reads`
-			: "Using inline decrypt for small reads"
+		nativeDecrypt
+			? "Using native Electron decrypt for large reads"
+			: decryptWorkers > 0
+				? `Using ${decryptWorkers} decrypt worker(s) for large reads`
+				: "Using inline decrypt for small reads"
 	)
 
 	return {
@@ -395,6 +399,18 @@ export async function openFscryptSource(
 			const firstPageOffset = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE
 			const lastPageOffset = Math.ceil((offset + cappedLength) / PAGE_SIZE) * PAGE_SIZE
 			const encryptedLength = Math.min(lastPageOffset, outputSizeNumber) - firstPageOffset
+			if (source.decryptFscryptRange) {
+				const decrypted = await source.decryptFscryptRange({
+					dataOffset: dataOffsetNumber,
+					outputSize: outputSizeNumber,
+					keyHex: keys.key,
+					ivHex,
+					offset,
+					length: cappedLength,
+					pageSize: PAGE_SIZE
+				})
+				return decrypted
+			}
 			const encrypted = await source.read(dataOffsetNumber + firstPageOffset, encryptedLength)
 			const decrypted = await decryptFscryptPages(keys.key, fileIv, firstPageOffset, encrypted, PAGE_SIZE)
 

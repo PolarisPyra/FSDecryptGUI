@@ -2,6 +2,15 @@ export type ReadableByteSource = {
 	name: string
 	size: number
 	read: (offset: number, length: number) => Promise<Uint8Array>
+	decryptFscryptRange?: (request: {
+		dataOffset: number
+		outputSize: number
+		keyHex: string
+		ivHex: string
+		offset: number
+		length: number
+		pageSize: number
+	}) => Promise<Uint8Array>
 }
 
 export function byteSourceFromFile(file: File): ReadableByteSource {

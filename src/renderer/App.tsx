@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { FileArchive, FileKey, FolderOpen, HardDriveDownload, RotateCcw, Square, Terminal, Zap } from "lucide-react"
+import { FileArchive, FileKey, FolderOpen, HardDriveDownload, RotateCcw, Terminal, X, Zap } from "lucide-react"
 
 import { ReadableByteSource } from "../fsdecrypt/byte-source"
 import { extractExfatContents } from "../fsdecrypt/exfat"
 import { FSCRYPT_CONTAINER_TYPE, describeContainerType, openFscryptSource } from "../fsdecrypt/fsdecrypt"
-import { NtfsExtractionWriter, appContainersToVhdSources, extractNtfsContents, scanNtfsBytes } from "../fsdecrypt/ntfs"
+import { NtfsExtractionWriter, appContainersToVhdSources, extractInternalVhdSource, extractNtfsContents } from "../fsdecrypt/ntfs"
 import { VhdNtfsSource, openVhdChainNtfsSource } from "../fsdecrypt/vhd"
 import { PickedFile, RendererConfig, byteSourceFromPickedFile } from "./electron-api"
 
@@ -24,7 +24,7 @@ type RunStats = {
 	totalBytes: number
 }
 
-const WRITE_CHUNK_SIZE = 8 * 1024 * 1024
+const WRITE_CHUNK_SIZE = 32 * 1024 * 1024
 
 const MODES = [
 	{ mode: "container" as const, label: "Base", icon: FileArchive },
@@ -130,7 +130,7 @@ function vhdDetails(result: VhdNtfsSource) {
 function createFolderWriter(
 	rootPath: string,
 	folderName: string,
-	totalBytes: number,
+	getTotalBytes: () => number,
 	setProgress: (progress: number) => void,
 	signal: AbortSignal,
 	onBytesWritten: (bytes: number) => void
@@ -145,25 +145,29 @@ function createFolderWriter(
 		const target = writePath(path)
 		let wroteChunk = false
 
-		for (let offset = 0; offset < source.size; offset += WRITE_CHUNK_SIZE) {
-			throwIfAborted(signal)
-			const chunk = await source.read(offset, Math.min(WRITE_CHUNK_SIZE, source.size - offset))
-			throwIfAborted(signal)
-			await window.fsdecryptGUI.writeFileChunk(rootPath, target, chunk, wroteChunk)
-			wroteChunk = true
-			written += chunk.length
-			onBytesWritten(chunk.length)
+		try {
+			for (let offset = 0; offset < source.size; offset += WRITE_CHUNK_SIZE) {
+				throwIfAborted(signal)
+				const chunk = await source.read(offset, Math.min(WRITE_CHUNK_SIZE, source.size - offset))
+				throwIfAborted(signal)
+				await window.fsdecryptGUI.writeFileChunk(rootPath, target, chunk, wroteChunk)
+				wroteChunk = true
+				written += chunk.length
+				onBytesWritten(chunk.length)
 
-			const now = performance.now()
-			if (now - lastProgressUpdate > 250 || offset + chunk.length >= source.size) {
-				lastProgressUpdate = now
-				setProgress(Math.min(99, Math.round((written / Math.max(totalBytes, 1)) * 100)))
+				const now = performance.now()
+				if (now - lastProgressUpdate > 250 || offset + chunk.length >= source.size) {
+					lastProgressUpdate = now
+					setProgress(Math.min(99, Math.round((written / Math.max(getTotalBytes(), 1)) * 100)))
+				}
 			}
-		}
 
-		if (!wroteChunk) {
-			throwIfAborted(signal)
-			await window.fsdecryptGUI.writeFileChunk(rootPath, target, new Uint8Array(), false)
+			if (!wroteChunk) {
+				throwIfAborted(signal)
+				await window.fsdecryptGUI.writeFileChunk(rootPath, target, new Uint8Array(), false)
+			}
+		} finally {
+			await window.fsdecryptGUI.closeOutputFile(rootPath, target)
 		}
 	}
 
@@ -336,17 +340,20 @@ export function App() {
 		signal: AbortSignal,
 		onBytesWritten: (bytes: number) => void
 	): Promise<CompletedResult> => {
-		appendLog(`Scanning NTFS to calculate progress...`)
-		throwIfAborted(signal)
-		const totalBytes = await scanNtfsBytes(ntfsSource, { onLog: appendLog, signal })
-		throwIfAborted(signal)
-		setRunStats(current => ({ ...current, totalBytes }))
 		const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
 		if (outputSegments.length > 0) {
 			await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
 		}
-		const writer = createFolderWriter(outputRoot, folderName, totalBytes, setProgress, signal, onBytesWritten)
-		const extracted = await extractNtfsContents(ntfsSource, writer, { onLog: appendLog, signal })
+		let totalBytes = 1
+		const writer = createFolderWriter(outputRoot, folderName, () => totalBytes, setProgress, signal, onBytesWritten)
+		const extracted = await extractNtfsContents(ntfsSource, writer, {
+			onLog: appendLog,
+			onTotalBytes: bytes => {
+				totalBytes = bytes
+				setRunStats(current => ({ ...current, totalBytes: bytes }))
+			},
+			signal
+		})
 		return {
 			outputFolder: sanitizePathSegment(folderName),
 			outputSegments,
@@ -391,9 +398,13 @@ export function App() {
 			if (mode === "container") {
 				if (!containerFile) return
 				throwIfAborted(abortController.signal)
-				const [internalVhd] = await appContainersToVhdSources([byteSourceFromPickedFile(containerFile)], { keyFile: keySource, onLog: appendLog })
+				appendLog(`Opening APP container ${containerFile.name}`)
+				const vhdSource = await extractInternalVhdSource(byteSourceFromPickedFile(containerFile), {
+					keyFile: keySource,
+					onLog: appendLog
+				})
 				throwIfAborted(abortController.signal)
-				const ntfsSource = await openVhdChainNtfsSource([internalVhd], { onLog: appendLog })
+				const ntfsSource = await openVhdChainNtfsSource([vhdSource], { onLog: appendLog })
 				setResult(await extractNtfsSource(ntfsSource, stripExtension(containerFile.name), elapsedDetails, abortController.signal, noteBytesWritten))
 			} else if (mode === "option") {
 				if (!containerFile) return
@@ -405,12 +416,20 @@ export function App() {
 				})
 				const folderName = stripExtension(exfatSource.outputFilename)
 				const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
-				setRunStats(current => ({ ...current, totalBytes: exfatSource.size }))
+				let totalBytes = exfatSource.size
+				setRunStats(current => ({ ...current, totalBytes }))
 				if (outputSegments.length > 0) {
 					await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
 				}
-				const writer = createFolderWriter(outputRoot, folderName, exfatSource.size, setProgress, abortController.signal, noteBytesWritten)
-				const extracted = await extractExfatContents(exfatSource, writer, { onLog: appendLog, signal: abortController.signal })
+				const writer = createFolderWriter(outputRoot, folderName, () => totalBytes, setProgress, abortController.signal, noteBytesWritten)
+				const extracted = await extractExfatContents(exfatSource, writer, {
+					onLog: appendLog,
+					onTotalBytes: bytes => {
+						totalBytes = bytes
+						setRunStats(current => ({ ...current, totalBytes: bytes }))
+					},
+					signal: abortController.signal
+				})
 				setResult({
 					outputFolder: sanitizePathSegment(folderName),
 					outputSegments,
@@ -428,12 +447,13 @@ export function App() {
 				throwIfAborted(abortController.signal)
 				const appFiles = vhdFiles.filter(f => f.name.toLowerCase().endsWith(".app"))
 				const rawVhdFiles = vhdFiles.filter(f => !f.name.toLowerCase().endsWith(".app"))
-				const appVhds = appFiles.length > 0
-					? await appContainersToVhdSources(appFiles.map(byteSourceFromPickedFile), { keyFile: keySource, onLog: appendLog })
-					: []
+				const appVhds =
+					appFiles.length > 0
+						? await appContainersToVhdSources(appFiles.map(byteSourceFromPickedFile), { keyFile: keySource, onLog: appendLog })
+						: []
 				throwIfAborted(abortController.signal)
 				const ntfsSource = await openVhdChainNtfsSource([...rawVhdFiles.map(byteSourceFromPickedFile), ...appVhds], { onLog: appendLog })
-				const topName = appVhds.at(-1)?.appName ?? rawVhdFiles.at(-1)?.name ?? ntfsSource.name
+				const topName = appFiles.at(-1)?.name ?? rawVhdFiles.at(-1)?.name ?? ntfsSource.name
 				setResult(await extractNtfsSource(ntfsSource, stripExtension(topName), elapsedDetails, abortController.signal, noteBytesWritten))
 			}
 
@@ -467,7 +487,7 @@ export function App() {
 					</button>
 					{isBusy ? (
 						<button type="button" onClick={cancelRun}>
-							<Square size={16} />
+							<X size={16} />
 							Cancel
 						</button>
 					) : (

@@ -11,6 +11,7 @@ const EXFAT_CLUSTER_FIRST = 2
 const EXFAT_CLUSTER_END = 0xfffffff8
 const EXFAT_DIRECTORY_ENTRY_SIZE = 32
 const EXTRACTION_CONCURRENCY = 4
+const LARGE_FILE_THRESHOLD = 64 * 1024 * 1024
 
 export type ExfatExtractionWriter = {
 	createDirectory: (path: string[]) => Promise<void>
@@ -25,6 +26,7 @@ export type ExfatExtractionResult = {
 
 type ExfatExtractionOptions = {
 	onLog?: (message: string) => void
+	onTotalBytes?: (bytes: number) => void
 	signal?: AbortSignal
 	fileConcurrency?: number
 }
@@ -46,6 +48,12 @@ type ExfatEntry = {
 	size: number
 	noFatChain: boolean
 	isDirectory: boolean
+}
+
+type ExtractionPlan = {
+	directories: string[][]
+	files: Array<{ path: string[]; entry: ExfatEntry }>
+	bytes: number
 }
 
 function readAscii(bytes: Uint8Array) {
@@ -345,37 +353,69 @@ async function readRootDirectory(ctx: ExfatContext, firstCluster: number) {
 	return output
 }
 
-async function extractDirectory(
+async function planDirectory(
 	ctx: ExfatContext,
-	writer: ExfatExtractionWriter,
 	firstCluster: number,
 	size: number | undefined,
 	noFatChain: boolean,
 	path: string[],
-	result: ExfatExtractionResult,
+	plan: ExtractionPlan,
 	options: ExfatExtractionOptions
 ) {
 	throwIfAborted(options.signal)
 	const entries = await readDirectoryEntries(ctx, firstCluster, size, noFatChain)
 
-	await runLimited(entries, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async entry => {
+	for (const entry of entries) {
 		throwIfAborted(options.signal)
 		const childPath = [...path, entry.name]
 		if (entry.isDirectory) {
-			if (path.length < 2) {
-				options.onLog?.(`Creating folder ${childPath.join("/")}`)
-			}
-			await writer.createDirectory(childPath)
-			result.directories += 1
-			await extractDirectory(ctx, writer, entry.firstCluster, entry.size, entry.noFatChain, childPath, result, options)
-			return
+			plan.directories.push(childPath)
+			await planDirectory(ctx, entry.firstCluster, entry.size, entry.noFatChain, childPath, plan, options)
+			continue
 		}
 
+		plan.files.push({ path: childPath, entry })
+		plan.bytes += entry.size
+	}
+}
+
+async function extractPlan(
+	ctx: ExfatContext,
+	writer: ExfatExtractionWriter,
+	plan: ExtractionPlan,
+	result: ExfatExtractionResult,
+	options: ExfatExtractionOptions
+) {
+	await runLimited(plan.directories, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async directoryPath => {
+		throwIfAborted(options.signal)
+		if (directoryPath.length < 2) {
+			options.onLog?.(`Creating folder ${directoryPath.join("/")}`)
+		}
+		await writer.createDirectory(directoryPath)
+		result.directories += 1
+	})
+
+	const smallFiles = plan.files.filter(file => file.entry.size < LARGE_FILE_THRESHOLD)
+	const largeFiles = plan.files.filter(file => file.entry.size >= LARGE_FILE_THRESHOLD)
+
+	for (const { path: filePath, entry } of largeFiles) {
+		throwIfAborted(options.signal)
 		const fileSource = sourceFromClusterStream(ctx, entry.name, entry.firstCluster, entry.size, entry.noFatChain)
 		if (fileSource.size >= 1024 * 1024) {
-			options.onLog?.(`Extracting ${childPath.join("/")} (${fileSource.size.toLocaleString()} bytes)`)
+			options.onLog?.(`Extracting ${filePath.join("/")} (${fileSource.size.toLocaleString()} bytes)`)
 		}
-		await writer.writeFile(childPath, fileSource)
+		await writer.writeFile(filePath, fileSource)
+		result.files += 1
+		result.bytes += fileSource.size
+	}
+
+	await runLimited(smallFiles, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async ({ path: filePath, entry }) => {
+		throwIfAborted(options.signal)
+		const fileSource = sourceFromClusterStream(ctx, entry.name, entry.firstCluster, entry.size, entry.noFatChain)
+		if (fileSource.size >= 1024 * 1024) {
+			options.onLog?.(`Extracting ${filePath.join("/")} (${fileSource.size.toLocaleString()} bytes)`)
+		}
+		await writer.writeFile(filePath, fileSource)
 		result.files += 1
 		result.bytes += fileSource.size
 	})
@@ -392,8 +432,15 @@ export async function extractExfatContents(
 	const result = { files: 0, directories: 0, bytes: 0 }
 	options.onLog?.(`Using up to ${(options.fileConcurrency ?? EXTRACTION_CONCURRENCY).toString()} concurrent file extract(s)`)
 	throwIfAborted(options.signal)
+	options.onLog?.("Building exFAT extraction plan")
+	const plan: ExtractionPlan = { directories: [], files: [], bytes: 0 }
+	await planDirectory(ctx, ctx.rootDirectoryCluster, undefined, false, [], plan, options)
+	options.onLog?.(
+		`Planned ${plan.files.length.toLocaleString()} file(s), ${plan.directories.length.toLocaleString()} folder(s), ${plan.bytes.toLocaleString()} bytes`
+	)
+	options.onTotalBytes?.(plan.bytes)
 	await writer.createDirectory([])
-	await extractDirectory(ctx, writer, ctx.rootDirectoryCluster, undefined, false, [], result, options)
+	await extractPlan(ctx, writer, plan, result, options)
 	options.onLog?.(
 		`Extracted ${result.files.toLocaleString()} file(s), ${result.directories.toLocaleString()} folder(s), ${result.bytes.toLocaleString()} bytes`
 	)
