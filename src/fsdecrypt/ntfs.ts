@@ -11,6 +11,7 @@ const NTFS_ATTR_END = 0xffffffff
 const NTFS_ROOT_RECORD = 5
 const NTFS_FILE_ATTRIBUTE_DIRECTORY = 0x10000000
 const NTFS_FILE_RECORD_DIRECTORY = 0x02
+const EXTRACTION_CONCURRENCY = 4
 
 type LocalOutputSink = {
 	write: (chunk: Uint8Array) => Promise<void>
@@ -75,6 +76,7 @@ export type NtfsExtractionResult = {
 type NtfsExtractionOptions = {
 	onLog?: (message: string) => void
 	signal?: AbortSignal
+	fileConcurrency?: number
 }
 
 function readAscii(bytes: Uint8Array) {
@@ -128,6 +130,18 @@ function throwIfAborted(signal: AbortSignal | undefined) {
 	if (signal?.aborted) {
 		throw new DOMException("Extraction cancelled", "AbortError")
 	}
+}
+
+async function runLimited<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+	let nextIndex = 0
+	const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+		while (nextIndex < items.length) {
+			const item = items[nextIndex++]
+			await worker(item)
+		}
+	})
+
+	await Promise.all(workers)
 }
 
 async function readNtfsBoot(source: ReadableByteSource): Promise<NtfsBoot> {
@@ -487,6 +501,7 @@ async function extractDirectory(
 
 	const entries = await readDirectoryEntries(ctx, recordNumber)
 	const seenNames = new Set<string>()
+	const childEntries: Array<{ entry: IndexEntry; safeName: string; childPath: string[] }> = []
 
 	for (const entry of entries) {
 		throwIfAborted(options.signal)
@@ -502,6 +517,11 @@ async function extractDirectory(
 		seenNames.add(nameKey)
 
 		const childPath = [...path, safeName]
+		childEntries.push({ entry, safeName, childPath })
+	}
+
+	await runLimited(childEntries, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async ({ entry, safeName, childPath }) => {
+		throwIfAborted(options.signal)
 		const childRecord = await readFileRecord(ctx, entry.fileReference)
 		const isDirectory = isDirectoryRecord(childRecord) || (entry.fileFlags & NTFS_FILE_ATTRIBUTE_DIRECTORY) !== 0
 
@@ -512,12 +532,12 @@ async function extractDirectory(
 			await writer.createDirectory(childPath)
 			result.directories += 1
 			await extractDirectory(ctx, writer, entry.fileReference, childPath, visited, result, options)
-			continue
+			return
 		}
 
 		const dataAttr = attributes(childRecord).find(attr => attr.type === NTFS_ATTR_DATA)
 		if (!dataAttr) {
-			continue
+			return
 		}
 
 		const data = parseDataAttribute(childRecord, dataAttr.offset)
@@ -528,7 +548,7 @@ async function extractDirectory(
 		await writer.writeFile(childPath, fileSource)
 		result.files += 1
 		result.bytes += fileSource.size
-	}
+	})
 }
 
 async function scanDirectoryBytes(
@@ -545,30 +565,27 @@ async function scanDirectoryBytes(
 
 	let totalBytes = 0
 	const entries = await readDirectoryEntries(ctx, recordNumber)
+	const childEntries = entries.filter(entry => !isSystemEntry(entry))
 
-	for (const entry of entries) {
+	await runLimited(childEntries, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async entry => {
 		throwIfAborted(options.signal)
-		if (isSystemEntry(entry)) {
-			continue
-		}
-
 		const childRecord = await readFileRecord(ctx, entry.fileReference)
 		const isDirectory = isDirectoryRecord(childRecord) || (entry.fileFlags & NTFS_FILE_ATTRIBUTE_DIRECTORY) !== 0
 
 		if (isDirectory) {
 			totalBytes += await scanDirectoryBytes(ctx, entry.fileReference, visited, options)
-			continue
+			return
 		}
 
 		const dataAttr = attributes(childRecord).find(attr => attr.type === NTFS_ATTR_DATA)
 		if (!dataAttr) {
-			continue
+			return
 		}
 
 		const data = parseDataAttribute(childRecord, dataAttr.offset)
 		const fileSize = data.resident ? data.value.length : data.realSize || entry.size
 		totalBytes += fileSize
-	}
+	})
 
 	return totalBytes
 }
@@ -582,6 +599,7 @@ export async function extractNtfsContents(
 	throwIfAborted(options.signal)
 	const ctx = await buildNtfsContext(source)
 	const result = { files: 0, directories: 0, bytes: 0 }
+	options.onLog?.(`Using up to ${(options.fileConcurrency ?? EXTRACTION_CONCURRENCY).toString()} concurrent file extract(s)`)
 	throwIfAborted(options.signal)
 	await writer.createDirectory([])
 	await extractDirectory(ctx, writer, NTFS_ROOT_RECORD, [], new Set(), result, options)

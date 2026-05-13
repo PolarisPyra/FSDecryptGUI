@@ -10,6 +10,7 @@ const EXFAT_NO_FAT_CHAIN = 0x02
 const EXFAT_CLUSTER_FIRST = 2
 const EXFAT_CLUSTER_END = 0xfffffff8
 const EXFAT_DIRECTORY_ENTRY_SIZE = 32
+const EXTRACTION_CONCURRENCY = 4
 
 export type ExfatExtractionWriter = {
 	createDirectory: (path: string[]) => Promise<void>
@@ -25,6 +26,7 @@ export type ExfatExtractionResult = {
 type ExfatExtractionOptions = {
 	onLog?: (message: string) => void
 	signal?: AbortSignal
+	fileConcurrency?: number
 }
 
 type ExfatContext = {
@@ -86,6 +88,18 @@ function throwIfAborted(signal: AbortSignal | undefined) {
 	if (signal?.aborted) {
 		throw new DOMException("Extraction cancelled", "AbortError")
 	}
+}
+
+async function runLimited<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+	let nextIndex = 0
+	const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+		while (nextIndex < items.length) {
+			const item = items[nextIndex++]
+			await worker(item)
+		}
+	})
+
+	await Promise.all(workers)
 }
 
 function clusterOffset(ctx: ExfatContext, cluster: number) {
@@ -344,7 +358,7 @@ async function extractDirectory(
 	throwIfAborted(options.signal)
 	const entries = await readDirectoryEntries(ctx, firstCluster, size, noFatChain)
 
-	for (const entry of entries) {
+	await runLimited(entries, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async entry => {
 		throwIfAborted(options.signal)
 		const childPath = [...path, entry.name]
 		if (entry.isDirectory) {
@@ -354,7 +368,7 @@ async function extractDirectory(
 			await writer.createDirectory(childPath)
 			result.directories += 1
 			await extractDirectory(ctx, writer, entry.firstCluster, entry.size, entry.noFatChain, childPath, result, options)
-			continue
+			return
 		}
 
 		const fileSource = sourceFromClusterStream(ctx, entry.name, entry.firstCluster, entry.size, entry.noFatChain)
@@ -364,7 +378,7 @@ async function extractDirectory(
 		await writer.writeFile(childPath, fileSource)
 		result.files += 1
 		result.bytes += fileSource.size
-	}
+	})
 }
 
 export async function extractExfatContents(
@@ -376,6 +390,7 @@ export async function extractExfatContents(
 	throwIfAborted(options.signal)
 	const ctx = await readExfatBoot(source)
 	const result = { files: 0, directories: 0, bytes: 0 }
+	options.onLog?.(`Using up to ${(options.fileConcurrency ?? EXTRACTION_CONCURRENCY).toString()} concurrent file extract(s)`)
 	throwIfAborted(options.signal)
 	await writer.createDirectory([])
 	await extractDirectory(ctx, writer, ctx.rootDirectoryCluster, undefined, false, [], result, options)

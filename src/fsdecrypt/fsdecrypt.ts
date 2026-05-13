@@ -1,6 +1,8 @@
-import aesjs from "aes-js"
-
 import { ReadableByteSource, byteSourceFromFile } from "./byte-source"
+import { AesBlock, bytesToHex, decryptCbcInto, decryptCbcNoPadding, hexToBytes } from "./crypto"
+import { decryptFscryptPages, getDecryptWorkerCount } from "./decrypt-pool"
+
+export { calculatePageIv } from "./crypto"
 
 const PAGE_SIZE = 4096
 const BOOTID_SIZE = 96
@@ -80,14 +82,6 @@ type GameKeys = {
 	iv?: string
 }
 
-type ByteSource = ArrayBuffer | Uint8Array | number[]
-
-type AesBlockCipher = {
-	decrypt(data: ByteSource): Uint8Array
-}
-
-const AesBlock = aesjs.AES as unknown as new (key: ByteSource) => AesBlockCipher
-
 const GAME_KEYS: Record<string, GameKeys> = {
 	SBZS: { key: "2ecbcff65ce0abecc10547f8ac8351d8", iv: "f2ac6c2817d0574bba113d497e319f3e" },
 	SBZT: { key: "9ab9ce55ed9c194a715a73a7699f795b", iv: "8552de88fedda6e859369fb000f44d5b" },
@@ -165,31 +159,6 @@ const GAME_KEYS: Record<string, GameKeys> = {
 
 export const BUILT_IN_KEY_IDS = [...Object.keys(GAME_KEYS).sort(), "OPTION"]
 
-function hexToBytes(hex: string) {
-	return aesjs.utils.hex.toBytes(hex)
-}
-
-function decryptCbcNoPadding(data: Uint8Array, keyHex: string, ivHex: string) {
-	const output = new Uint8Array(data.length)
-	decryptCbcInto(new AesBlock(hexToBytes(keyHex)), data, hexToBytes(ivHex), output)
-	return output
-}
-
-function decryptCbcInto(cipher: AesBlockCipher, encrypted: Uint8Array, iv: Uint8Array, output: Uint8Array) {
-	let previous = iv
-
-	for (let blockOffset = 0; blockOffset < encrypted.length; blockOffset += 16) {
-		const block = encrypted.subarray(blockOffset, blockOffset + 16)
-		const decrypted = cipher.decrypt(block)
-
-		for (let index = 0; index < 16; index++) {
-			output[blockOffset + index] = decrypted[index] ^ previous[index]
-		}
-
-		previous = block
-	}
-}
-
 function bytesEqual(left: Uint8Array, right: Uint8Array) {
 	return left.length === right.length && left.every((value, index) => value === right[index])
 }
@@ -256,17 +225,6 @@ function parseBootId(encryptedBootId: Uint8Array): FscryptBootId {
 	}
 }
 
-export function calculatePageIv(fileOffset: bigint, fileIv: Uint8Array) {
-	const pageIv = new Uint8Array(16)
-
-	for (let index = 0; index < 16; index++) {
-		const shift = BigInt(8 * (index % 8))
-		pageIv[index] = fileIv[index] ^ Number((fileOffset >> shift) & 0xffn)
-	}
-
-	return pageIv
-}
-
 function calculateFileIv(key: string, expectedHeader: string, firstPage: Uint8Array) {
 	const header = firstPage.slice(0, 16)
 	const output = new Uint8Array(header.length)
@@ -307,7 +265,7 @@ async function customKeys(keyFile?: FscryptInput): Promise<GameKeys | undefined>
 
 	const source = toByteSource(keyFile)
 	const bytes = await source.read(0, source.size)
-	const key = aesjs.utils.hex.fromBytes(bytes.slice(0, 16))
+	const key = bytesToHex(bytes.slice(0, 16))
 
 	if (bytes.length === 16) {
 		return { key }
@@ -322,7 +280,7 @@ async function customKeys(keyFile?: FscryptInput): Promise<GameKeys | undefined>
 		return { key }
 	}
 
-	return { key, iv: aesjs.utils.hex.fromBytes(iv) }
+	return { key, iv: bytesToHex(iv) }
 }
 
 async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile?: FscryptInput): Promise<GameKeys> {
@@ -331,7 +289,7 @@ async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile
 		const iv =
 			!bootId.useCustomIv && keys.iv
 				? keys.iv
-				: aesjs.utils.hex.fromBytes(calculateFileIv(keys.key, EXFAT_HEADER, firstPage))
+			: bytesToHex(calculateFileIv(keys.key, EXFAT_HEADER, firstPage))
 		return { key: keys.key, iv }
 	}
 
@@ -344,7 +302,7 @@ async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile
 	const iv =
 		!bootId.useCustomIv && keys.iv
 			? keys.iv
-			: aesjs.utils.hex.fromBytes(calculateFileIv(keys.key, NTFS_HEADER, firstPage))
+		: bytesToHex(calculateFileIv(keys.key, NTFS_HEADER, firstPage))
 
 	return { key: keys.key, iv }
 }
@@ -411,8 +369,13 @@ export async function openFscryptSource(
 		throw new Error("Missing file IV")
 	}
 
-	const cipher = new AesBlock(hexToBytes(keys.key))
 	const fileIv = hexToBytes(keys.iv)
+	const decryptWorkers = getDecryptWorkerCount()
+	onLog?.(
+		decryptWorkers > 0
+			? `Using ${decryptWorkers} decrypt worker(s) for large reads`
+			: "Using inline decrypt for small reads"
+	)
 
 	return {
 		name: filename,
@@ -432,19 +395,8 @@ export async function openFscryptSource(
 			const firstPageOffset = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE
 			const lastPageOffset = Math.ceil((offset + cappedLength) / PAGE_SIZE) * PAGE_SIZE
 			const encryptedLength = Math.min(lastPageOffset, outputSizeNumber) - firstPageOffset
-				const encrypted = await source.read(dataOffsetNumber + firstPageOffset, encryptedLength)
-			const decrypted = new Uint8Array(encrypted.length)
-
-			if (encrypted.length % 16 !== 0) {
-				throw new Error("Encrypted range is not AES block aligned")
-			}
-
-			for (let pageOffset = 0; pageOffset < encrypted.length; pageOffset += PAGE_SIZE) {
-				const encryptedPage = encrypted.subarray(pageOffset, pageOffset + PAGE_SIZE)
-				const outputPage = decrypted.subarray(pageOffset, pageOffset + encryptedPage.length)
-				const pageIv = calculatePageIv(BigInt(firstPageOffset + pageOffset), fileIv)
-				decryptCbcInto(cipher, encryptedPage, pageIv, outputPage)
-			}
+			const encrypted = await source.read(dataOffsetNumber + firstPageOffset, encryptedLength)
+			const decrypted = await decryptFscryptPages(keys.key, fileIv, firstPageOffset, encrypted, PAGE_SIZE)
 
 			return decrypted.slice(offset - firstPageOffset, offset - firstPageOffset + cappedLength)
 		}
