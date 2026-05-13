@@ -23,9 +23,9 @@ pnpm dist
 
 ## Notes
 
-- `Base APP` decrypts an APP/OS container, finds the internal VHD, mounts the NTFS view, and extracts files.
+- `Base` decrypts an APP/OS container, finds the internal VHD, mounts the NTFS view, and extracts files.
 - `Option` decrypts an `.opt` container and extracts the exFAT contents.
-- `Merge APPs` accepts APP and VHD layers, merges the chain, and extracts the resulting NTFS contents.
+- `Merge` accepts APP and VHD layers, merges the chain, and extracts the resulting NTFS contents.
 - Key files may be 16 bytes or 32 bytes. Built-in keys are used when no key file is selected.
 - Output is written through Electron's main process into the selected output folder.
 - Select the output folder from `File > Select Output Folder...`.
