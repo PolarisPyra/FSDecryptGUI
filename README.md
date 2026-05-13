@@ -38,6 +38,26 @@ pnpm dist
 
 ## Troubleshooting
 
+### `Electron failed to install correctly`
+
+This means Electron's package install script did not run, so the desktop runtime
+binary was not downloaded into `node_modules`. The repository allows Electron's
+build script for pnpm installs, but an existing install can still be repaired
+with:
+
+```sh
+pnpm rebuild electron
+pnpm dev
+```
+
+If the install was created before that approval was present, reinstall once:
+
+```sh
+rm -rf node_modules
+pnpm install
+pnpm dev
+```
+
 ### `ENOENT: no such file or directory, uv_cwd`
 
 This is a pnpm/Node startup error that happens before the app is loaded. It means

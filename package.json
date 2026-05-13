@@ -59,5 +59,10 @@
 			"target": "dmg"
 		}
 	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"electron"
+		]
+	},
 	"packageManager": "pnpm@10.18.0"
 }
