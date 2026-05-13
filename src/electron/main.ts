@@ -1,5 +1,5 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from "electron"
-import { mkdir, open, stat, writeFile } from "node:fs/promises"
+import { mkdir, open, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -16,6 +16,11 @@ type WriteFileRequest = {
 	segments: string[]
 	chunk: ArrayBuffer
 	append: boolean
+}
+
+type OutputFolderRequest = {
+	rootPath: string
+	segments: string[]
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -53,6 +58,52 @@ function focusedWindow() {
 
 function sendConfig(window: BrowserWindow, config: Awaited<ReturnType<typeof readRendererConfig>>) {
 	window.webContents.send("config:changed", config)
+}
+
+async function pathExists(target: string) {
+	try {
+		await stat(target)
+		return true
+	} catch {
+		return false
+	}
+}
+
+async function prepareOutputFolder(window: BrowserWindow | undefined, target: string) {
+	if (!(await pathExists(target))) {
+		await mkdir(target, { recursive: true })
+		return
+	}
+
+	const result = window
+		? await dialog.showMessageBox(window, {
+				type: "question",
+				message: "Output folder already exists",
+				detail: `${target}\n\nReplace deletes the existing folder first. Merge keeps the folder and overwrites matching files.`,
+				buttons: ["Replace", "Merge", "Cancel"],
+				defaultId: 1,
+				cancelId: 2,
+				noLink: true
+			})
+		: await dialog.showMessageBox({
+				type: "question",
+				message: "Output folder already exists",
+				detail: `${target}\n\nReplace deletes the existing folder first. Merge keeps the folder and overwrites matching files.`,
+				buttons: ["Replace", "Merge", "Cancel"],
+				defaultId: 1,
+				cancelId: 2,
+				noLink: true
+			})
+
+	if (result.response === 2) {
+		throw new Error("Extraction cancelled")
+	}
+
+	if (result.response === 0) {
+		await rm(target, { recursive: true, force: true })
+	}
+
+	await mkdir(target, { recursive: true })
 }
 
 async function chooseOutputFolder(window: BrowserWindow) {
@@ -141,7 +192,6 @@ async function createWindow() {
 
 	if (isDev && process.env.VITE_DEV_SERVER_URL) {
 		await window.loadURL(process.env.VITE_DEV_SERVER_URL)
-		window.webContents.openDevTools({ mode: "detach" })
 	} else {
 		await window.loadFile(resolveRendererPath())
 	}
@@ -181,6 +231,20 @@ ipcMain.handle("config:openFolder", async () => {
 	const folder = path.dirname(config.configPath)
 	await mkdir(folder, { recursive: true })
 	const error = await shell.openPath(folder)
+	if (error) {
+		throw new Error(error)
+	}
+})
+
+ipcMain.handle("fs:prepareOutputFolder", async (_event, request: OutputFolderRequest) => {
+	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
+	await prepareOutputFolder(window, safeOutputPath(request.rootPath, request.segments))
+})
+
+ipcMain.handle("fs:openOutputFolder", async (_event, request: OutputFolderRequest) => {
+	const target = safeOutputPath(request.rootPath, request.segments)
+	await mkdir(target, { recursive: true })
+	const error = await shell.openPath(target)
 	if (error) {
 		throw new Error(error)
 	}

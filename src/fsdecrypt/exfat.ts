@@ -22,6 +22,11 @@ export type ExfatExtractionResult = {
 	bytes: number
 }
 
+type ExfatExtractionOptions = {
+	onLog?: (message: string) => void
+	signal?: AbortSignal
+}
+
 type ExfatContext = {
 	source: ReadableByteSource
 	bytesPerSector: number
@@ -75,6 +80,12 @@ function sanitizePathSegment(name: string) {
 		const code = character.charCodeAt(0)
 		return code < 32 || '<>:"/\\|?*'.includes(character) ? "_" : character
 	}).join("")
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+	if (signal?.aborted) {
+		throw new DOMException("Extraction cancelled", "AbortError")
+	}
 }
 
 function clusterOffset(ctx: ExfatContext, cluster: number) {
@@ -328,11 +339,13 @@ async function extractDirectory(
 	noFatChain: boolean,
 	path: string[],
 	result: ExfatExtractionResult,
-	options: { onLog?: (message: string) => void }
+	options: ExfatExtractionOptions
 ) {
+	throwIfAborted(options.signal)
 	const entries = await readDirectoryEntries(ctx, firstCluster, size, noFatChain)
 
 	for (const entry of entries) {
+		throwIfAborted(options.signal)
 		const childPath = [...path, entry.name]
 		if (entry.isDirectory) {
 			if (path.length < 2) {
@@ -357,11 +370,13 @@ async function extractDirectory(
 export async function extractExfatContents(
 	source: ReadableByteSource,
 	writer: ExfatExtractionWriter,
-	options: { onLog?: (message: string) => void } = {}
+	options: ExfatExtractionOptions = {}
 ): Promise<ExfatExtractionResult> {
 	options.onLog?.(`Opening exFAT contents from ${source.name}`)
+	throwIfAborted(options.signal)
 	const ctx = await readExfatBoot(source)
 	const result = { files: 0, directories: 0, bytes: 0 }
+	throwIfAborted(options.signal)
 	await writer.createDirectory([])
 	await extractDirectory(ctx, writer, ctx.rootDirectoryCluster, undefined, false, [], result, options)
 	options.onLog?.(

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { FileArchive, FileKey, FolderOpen, HardDriveDownload, RotateCcw, Terminal, Zap } from "lucide-react"
+import { FileArchive, FileKey, FolderOpen, HardDriveDownload, RotateCcw, Square, Terminal, Zap } from "lucide-react"
 
 import { ReadableByteSource } from "../fsdecrypt/byte-source"
 import { extractExfatContents } from "../fsdecrypt/exfat"
@@ -13,8 +13,15 @@ type ToolMode = "container" | "option" | "vhd"
 
 type CompletedResult = {
 	outputFolder: string
+	outputSegments: string[]
 	outputSize: number
 	details: Array<{ label: string; value: string }>
+}
+
+type RunStats = {
+	elapsedMs: number
+	bytesWritten: number
+	totalBytes: number
 }
 
 const WRITE_CHUNK_SIZE = 8 * 1024 * 1024
@@ -38,6 +45,11 @@ function formatBytes(bytes: number) {
 
 function basename(filePath: string) {
 	return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath
+}
+
+function outputSegmentsForFolder(rootPath: string, folderName: string) {
+	const outputFolder = sanitizePathSegment(folderName)
+	return basename(rootPath) === outputFolder ? [] : [outputFolder]
 }
 
 function dirname(filePath: string) {
@@ -67,6 +79,45 @@ function stripExtension(name: string) {
 	return name.replace(/\.[^.]+$/, "")
 }
 
+function formatDuration(ms: number) {
+	if (ms < 60_000) {
+		return `${(ms / 1000).toFixed(1)}s`
+	}
+
+	return `${Math.floor(ms / 60_000)}m ${((ms % 60_000) / 1000).toFixed(0)}s`
+}
+
+function formatThroughput(bytes: number, elapsedMs: number) {
+	if (bytes <= 0 || elapsedMs <= 0) {
+		return "0 B/s"
+	}
+
+	return `${formatBytes((bytes / elapsedMs) * 1000)}/s`
+}
+
+function formatEta(stats: RunStats) {
+	if (stats.bytesWritten <= 0 || stats.totalBytes <= 0 || stats.bytesWritten >= stats.totalBytes) {
+		return "..."
+	}
+
+	const bytesPerMs = stats.bytesWritten / Math.max(stats.elapsedMs, 1)
+	return formatDuration((stats.totalBytes - stats.bytesWritten) / bytesPerMs)
+}
+
+function abortError() {
+	return new DOMException("Extraction cancelled", "AbortError")
+}
+
+function throwIfAborted(signal: AbortSignal) {
+	if (signal.aborted) {
+		throw abortError()
+	}
+}
+
+function isAbortError(error: unknown) {
+	return (error instanceof DOMException && error.name === "AbortError") || (error instanceof Error && error.message === "Extraction cancelled")
+}
+
 function vhdDetails(result: VhdNtfsSource) {
 	return [
 		{ label: "Layers", value: result.chain.length.toString() },
@@ -80,12 +131,14 @@ function createFolderWriter(
 	rootPath: string,
 	folderName: string,
 	totalBytes: number,
-	setProgress: (progress: number) => void
+	setProgress: (progress: number) => void,
+	signal: AbortSignal,
+	onBytesWritten: (bytes: number) => void
 ): NtfsExtractionWriter {
 	let written = 0
 	let lastProgressUpdate = 0
 	const outputFolder = sanitizePathSegment(folderName)
-	const outputRoot = basename(rootPath) === outputFolder ? [] : [outputFolder]
+	const outputRoot = outputSegmentsForFolder(rootPath, outputFolder)
 	const writePath = (path: string[]) => [...outputRoot, ...path.map(sanitizePathSegment)]
 
 	const writeFile = async (path: string[], source: ReadableByteSource) => {
@@ -93,10 +146,13 @@ function createFolderWriter(
 		let wroteChunk = false
 
 		for (let offset = 0; offset < source.size; offset += WRITE_CHUNK_SIZE) {
+			throwIfAborted(signal)
 			const chunk = await source.read(offset, Math.min(WRITE_CHUNK_SIZE, source.size - offset))
+			throwIfAborted(signal)
 			await window.fsdecryptGUI.writeFileChunk(rootPath, target, chunk, wroteChunk)
 			wroteChunk = true
 			written += chunk.length
+			onBytesWritten(chunk.length)
 
 			const now = performance.now()
 			if (now - lastProgressUpdate > 250 || offset + chunk.length >= source.size) {
@@ -106,12 +162,16 @@ function createFolderWriter(
 		}
 
 		if (!wroteChunk) {
+			throwIfAborted(signal)
 			await window.fsdecryptGUI.writeFileChunk(rootPath, target, new Uint8Array(), false)
 		}
 	}
 
 	return {
-		createDirectory: path => window.fsdecryptGUI.ensureDirectory(rootPath, writePath(path)),
+		createDirectory: path => {
+			throwIfAborted(signal)
+			return window.fsdecryptGUI.ensureDirectory(rootPath, writePath(path))
+		},
 		writeFile
 	}
 }
@@ -143,13 +203,26 @@ export function App() {
 	const [configPath, setConfigPath] = useState("")
 	const [isBusy, setIsBusy] = useState(false)
 	const [progress, setProgress] = useState(0)
+	const [runStats, setRunStats] = useState<RunStats>({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
 	const [logs, setLogs] = useState<string[]>(["Ready"])
 	const [result, setResult] = useState<CompletedResult | null>(null)
 	const terminalRef = useRef<HTMLDivElement>(null)
+	const abortControllerRef = useRef<AbortController | null>(null)
+	const runStartedAtRef = useRef(0)
 
 	useEffect(() => {
 		terminalRef.current?.scrollTo({ top: terminalRef.current.scrollHeight })
 	}, [logs])
+
+	useEffect(() => {
+		if (!isBusy) return
+
+		const interval = window.setInterval(() => {
+			setRunStats(current => ({ ...current, elapsedMs: performance.now() - runStartedAtRef.current }))
+		}, 250)
+
+		return () => window.clearInterval(interval)
+	}, [isBusy])
 
 	const selectedFiles = mode === "vhd" ? vhdFiles : containerFile ? [containerFile] : []
 	const canRun = !isBusy && Boolean(outputRoot) && (mode === "vhd" ? vhdFiles.length > 0 : Boolean(containerFile))
@@ -228,8 +301,14 @@ export function App() {
 		setContainerFile(null)
 		setVhdFiles([])
 		setProgress(0)
+		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
 		setLogs(["Ready"])
 		setResult(null)
+	}
+
+	const cancelRun = () => {
+		abortControllerRef.current?.abort()
+		appendLog("Cancelling extraction...")
 	}
 
 	const openConfigFolder = async () => {
@@ -240,17 +319,37 @@ export function App() {
 		}
 	}
 
+	const openResultFolder = async () => {
+		if (!result) return
+
+		try {
+			await window.fsdecryptGUI.openOutputFolder(outputRoot, result.outputSegments)
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not open output folder: ${error.message}` : "Could not open output folder")
+		}
+	}
+
 	const extractNtfsSource = async (
 		ntfsSource: VhdNtfsSource,
 		folderName: string,
-		getExtraDetails: () => CompletedResult["details"] = () => []
+		getExtraDetails: () => CompletedResult["details"],
+		signal: AbortSignal,
+		onBytesWritten: (bytes: number) => void
 	): Promise<CompletedResult> => {
 		appendLog(`Scanning NTFS to calculate progress...`)
-		const totalBytes = await scanNtfsBytes(ntfsSource, { onLog: appendLog })
-		const writer = createFolderWriter(outputRoot, folderName, totalBytes, setProgress)
-		const extracted = await extractNtfsContents(ntfsSource, writer, { onLog: appendLog })
+		throwIfAborted(signal)
+		const totalBytes = await scanNtfsBytes(ntfsSource, { onLog: appendLog, signal })
+		throwIfAborted(signal)
+		setRunStats(current => ({ ...current, totalBytes }))
+		const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
+		if (outputSegments.length > 0) {
+			await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
+		}
+		const writer = createFolderWriter(outputRoot, folderName, totalBytes, setProgress, signal, onBytesWritten)
+		const extracted = await extractNtfsContents(ntfsSource, writer, { onLog: appendLog, signal })
 		return {
 			outputFolder: sanitizePathSegment(folderName),
+			outputSegments,
 			outputSize: extracted.bytes,
 			details: [
 				...getExtraDetails(),
@@ -264,19 +363,26 @@ export function App() {
 	const run = async () => {
 		if (!canRun) return
 
+		const abortController = new AbortController()
+		abortControllerRef.current = abortController
+		runStartedAtRef.current = performance.now()
 		setIsBusy(true)
 		setProgress(0)
+		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
 		setLogs([])
 		setResult(null)
 
-		const startTime = performance.now()
-
 		const elapsedDetails = (): CompletedResult["details"] => {
-			const ms = performance.now() - startTime
-			const value = ms < 60_000
-				? `${(ms / 1000).toFixed(1)}s`
-				: `${Math.floor(ms / 60_000)}m ${((ms % 60_000) / 1000).toFixed(0)}s`
+			const ms = performance.now() - runStartedAtRef.current
+			const value = formatDuration(ms)
 			return [{ label: "Elapsed", value }]
+		}
+		const noteBytesWritten = (bytes: number) => {
+			setRunStats(current => ({
+				...current,
+				bytesWritten: current.bytesWritten + bytes,
+				elapsedMs: performance.now() - runStartedAtRef.current
+			}))
 		}
 
 		try {
@@ -284,21 +390,30 @@ export function App() {
 
 			if (mode === "container") {
 				if (!containerFile) return
+				throwIfAborted(abortController.signal)
 				const [internalVhd] = await appContainersToVhdSources([byteSourceFromPickedFile(containerFile)], { keyFile: keySource, onLog: appendLog })
+				throwIfAborted(abortController.signal)
 				const ntfsSource = await openVhdChainNtfsSource([internalVhd], { onLog: appendLog })
-				setResult(await extractNtfsSource(ntfsSource, stripExtension(containerFile.name), elapsedDetails))
+				setResult(await extractNtfsSource(ntfsSource, stripExtension(containerFile.name), elapsedDetails, abortController.signal, noteBytesWritten))
 			} else if (mode === "option") {
 				if (!containerFile) return
+				throwIfAborted(abortController.signal)
 				const exfatSource = await openFscryptSource(byteSourceFromPickedFile(containerFile), {
 					expectedContainerType: FSCRYPT_CONTAINER_TYPE.OPTION,
 					keyFile: keySource,
 					onLog: appendLog
 				})
 				const folderName = stripExtension(exfatSource.outputFilename)
-				const writer = createFolderWriter(outputRoot, folderName, exfatSource.size, setProgress)
-				const extracted = await extractExfatContents(exfatSource, writer, { onLog: appendLog })
+				const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
+				setRunStats(current => ({ ...current, totalBytes: exfatSource.size }))
+				if (outputSegments.length > 0) {
+					await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
+				}
+				const writer = createFolderWriter(outputRoot, folderName, exfatSource.size, setProgress, abortController.signal, noteBytesWritten)
+				const extracted = await extractExfatContents(exfatSource, writer, { onLog: appendLog, signal: abortController.signal })
 				setResult({
 					outputFolder: sanitizePathSegment(folderName),
+					outputSegments,
 					outputSize: extracted.bytes,
 					details: [
 						...elapsedDetails(),
@@ -310,22 +425,30 @@ export function App() {
 					]
 				})
 			} else {
+				throwIfAborted(abortController.signal)
 				const appFiles = vhdFiles.filter(f => f.name.toLowerCase().endsWith(".app"))
 				const rawVhdFiles = vhdFiles.filter(f => !f.name.toLowerCase().endsWith(".app"))
 				const appVhds = appFiles.length > 0
 					? await appContainersToVhdSources(appFiles.map(byteSourceFromPickedFile), { keyFile: keySource, onLog: appendLog })
 					: []
+				throwIfAborted(abortController.signal)
 				const ntfsSource = await openVhdChainNtfsSource([...rawVhdFiles.map(byteSourceFromPickedFile), ...appVhds], { onLog: appendLog })
 				const topName = appVhds.at(-1)?.appName ?? rawVhdFiles.at(-1)?.name ?? ntfsSource.name
-				setResult(await extractNtfsSource(ntfsSource, stripExtension(topName), elapsedDetails))
+				setResult(await extractNtfsSource(ntfsSource, stripExtension(topName), elapsedDetails, abortController.signal, noteBytesWritten))
 			}
 
 			setProgress(100)
 			appendLog("Done")
 		} catch (error) {
 			console.error(error)
-			appendLog(error instanceof Error ? `ERROR: ${error.message}` : "ERROR: fsdecrypt failed")
+			if (isAbortError(error)) {
+				setProgress(0)
+				appendLog("Cancelled")
+			} else {
+				appendLog(error instanceof Error ? `ERROR: ${error.message}` : "ERROR: fsdecrypt failed")
+			}
 		} finally {
+			abortControllerRef.current = null
 			setIsBusy(false)
 		}
 	}
@@ -342,10 +465,17 @@ export function App() {
 						<Zap size={16} />
 						Extract
 					</button>
-					<button type="button" disabled={isBusy} onClick={reset}>
-						<RotateCcw size={16} />
-						Reset
-					</button>
+					{isBusy ? (
+						<button type="button" onClick={cancelRun}>
+							<Square size={16} />
+							Cancel
+						</button>
+					) : (
+						<button type="button" onClick={reset}>
+							<RotateCcw size={16} />
+							Reset
+						</button>
+					)}
 				</div>
 			</header>
 
@@ -380,32 +510,32 @@ export function App() {
 									<span>{formatBytes(file.size)}</span>
 								</div>
 							))
-							)}
-							<hr />
-							<label>Key</label>
-							<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>
-							<hr />
-							<label>Output Root</label>
-							<strong className="truncate">{outputRoot ? basename(outputRoot) : "File > Select Output Folder"}</strong>
-							<hr />
-							<label>Config Folder</label>
-							<div className="path-action-row">
-								<strong className="truncate" title={configFolder || configPath || "config.yaml"}>
-									{configFolder ? compactPath(configFolder) : "config.yaml"}
-								</strong>
-								<button
-									type="button"
-									className="icon-button"
-									disabled={!configFolder}
-									title="Open config folder"
-									aria-label="Open config folder"
-									onClick={openConfigFolder}
-								>
-									<FolderOpen size={16} />
-								</button>
-							</div>
+						)}
+						<hr />
+						<label>Key</label>
+						<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>
+						<hr />
+						<label>Output Root</label>
+						<strong className="truncate">{outputRoot ? basename(outputRoot) : "File > Select Output Folder"}</strong>
+						<hr />
+						<label>Config Folder</label>
+						<div className="path-action-row">
+							<strong className="truncate" title={configFolder || configPath || "config.yaml"}>
+								{configFolder ? compactPath(configFolder) : "config.yaml"}
+							</strong>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={!configFolder}
+								title="Open config folder"
+								aria-label="Open config folder"
+								onClick={openConfigFolder}
+							>
+								<FolderOpen size={16} />
+							</button>
 						</div>
-					</section>
+					</div>
+				</section>
 
 				<section className="main-panel">
 					<div className="summary-grid">
@@ -419,7 +549,20 @@ export function App() {
 						</div>
 						<div>
 							<label>Output</label>
-							<strong className={!result ? "muted" : ""}>{result?.outputFolder ?? "Pending"}</strong>
+							<div className={result ? "path-action-row" : ""}>
+								<strong className={!result ? "muted" : ""}>{result?.outputFolder ?? "Pending"}</strong>
+								{result && (
+									<button
+										type="button"
+										className="icon-button"
+										title="Open output folder"
+										aria-label="Open output folder"
+										onClick={openResultFolder}
+									>
+										<FolderOpen size={16} />
+									</button>
+								)}
+							</div>
 						</div>
 					</div>
 
@@ -430,6 +573,20 @@ export function App() {
 								<strong>{progress}%</strong>
 							</div>
 							<progress value={progress} max={100} />
+							<div className="stats-grid">
+								<div>
+									<label>Elapsed</label>
+									<strong>{formatDuration(runStats.elapsedMs)}</strong>
+								</div>
+								<div>
+									<label>Throughput</label>
+									<strong>{formatThroughput(runStats.bytesWritten, runStats.elapsedMs)}</strong>
+								</div>
+								<div>
+									<label>ETA</label>
+									<strong>{formatEta(runStats)}</strong>
+								</div>
+							</div>
 						</div>
 					)}
 

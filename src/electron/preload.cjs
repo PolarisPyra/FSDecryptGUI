@@ -12,6 +12,8 @@ const api = {
 	},
 	readRange: (filePath, offset, length) => ipcRenderer.invoke("fs:readRange", filePath, offset, length),
 	ensureDirectory: (rootPath, segments) => ipcRenderer.invoke("fs:ensureDirectory", rootPath, segments),
+	prepareOutputFolder: (rootPath, segments) => ipcRenderer.invoke("fs:prepareOutputFolder", { rootPath, segments }),
+	openOutputFolder: (rootPath, segments) => ipcRenderer.invoke("fs:openOutputFolder", { rootPath, segments }),
 	writeFileChunk: (rootPath, segments, chunk, append) =>
 		ipcRenderer.invoke("fs:writeFileChunk", {
 			rootPath,

@@ -18,6 +18,8 @@ export type ElectronApi = {
 	onConfigChanged: (callback: (config: RendererConfig) => void) => () => void
 	readRange: (filePath: string, offset: number, length: number) => Promise<ArrayBuffer>
 	ensureDirectory: (rootPath: string, segments: string[]) => Promise<void>
+	prepareOutputFolder: (rootPath: string, segments: string[]) => Promise<void>
+	openOutputFolder: (rootPath: string, segments: string[]) => Promise<void>
 	writeFileChunk: (rootPath: string, segments: string[], chunk: Uint8Array, append: boolean) => Promise<void>
 }
 

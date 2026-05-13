@@ -27,12 +27,12 @@
 		"@types/react-dom": "^19.1.9",
 		"@vitejs/plugin-react": "^4.7.0",
 		"concurrently": "^9.2.1",
-		"cross-env": "^10.1.0",
+		"cross-env": "^7.0.3",
 		"electron": "^39.2.6",
 		"electron-builder": "^26.0.12",
 		"typescript": "^5.7.3",
 		"vite": "^6.3.6",
-		"wait-on": "^9.0.3"
+		"wait-on": "^8.0.3"
 	},
 	"build": {
 		"appId": "dev.polaris.fsdecryptgui",

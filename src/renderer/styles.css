@@ -290,6 +290,13 @@ progress::-webkit-progress-value {
 	background: #8fd7b3;
 }
 
+.stats-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.8rem;
+	margin-top: 0.85rem;
+}
+
 .result-grid {
 	display: grid;
 	grid-template-columns: repeat(4, minmax(0, 1fr));
