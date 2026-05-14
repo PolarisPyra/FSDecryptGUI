@@ -11,10 +11,14 @@
 		"forceConsistentCasingInFileNames": true,
 		"module": "ESNext",
 		"moduleResolution": "Bundler",
+		"baseUrl": ".",
+		"paths": {
+			"@/*": ["./src/*"]
+		},
 		"resolveJsonModule": true,
 		"isolatedModules": true,
 		"noEmit": true,
 		"jsx": "react-jsx"
 	},
-	"include": ["src/renderer", "src/fsdecrypt", "src/vite-env.d.ts"]
+	"include": ["src/renderer", "src/components", "src/lib", "src/fsdecrypt", "src/vite-env.d.ts"]
 }
