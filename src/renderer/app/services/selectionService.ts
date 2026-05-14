@@ -8,6 +8,7 @@ import type {
 	AppLayerInfo,
 	BaseSelectionGroup,
 	KeyValidation,
+	LayerDisplayInfo,
 	MergeSelectionGroup,
 	OptionLayerInfo,
 	OptionSelectionGroup,
@@ -63,7 +64,7 @@ export function versionKey(version: VersionLike) {
 	return `${version.major}.${version.minor}.${version.release}`
 }
 
-export function appLayerLabel(layer: AppLayerInfo) {
+function appLayerLabel(layer: Pick<AppLayerInfo, "bootId">) {
 	if (!layer.bootId) {
 		return "Unknown APP"
 	}
@@ -71,7 +72,7 @@ export function appLayerLabel(layer: AppLayerInfo) {
 	return `${layer.bootId.gameId} ${formatVersion(layer.bootId.targetVersion)}`
 }
 
-export function optionLabel(layer: OptionLayerInfo) {
+function optionLabel(layer: Pick<OptionLayerInfo, "bootId" | "file">) {
 	if (!layer.bootId) {
 		return stripExtension(layer.file.name)
 	}
@@ -79,54 +80,72 @@ export function optionLabel(layer: OptionLayerInfo) {
 	return `${layer.bootId.gameId} ${layer.bootId.targetOption}`
 }
 
-export function missingOptionParent(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+function missingOptionParent(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
 	return layer.vhdLayers.find(vhd => vhd.parentId && !allVhds.some(candidate => candidate.ownId === vhd.parentId))
 }
 
-export function linkedOptionParent(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+function linkedOptionParent(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
 	return layer.vhdLayers.find(vhd => vhd.parentId && allVhds.some(candidate => candidate.ownId === vhd.parentId))
 }
 
-export function linkedOptionChild(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+function linkedOptionChild(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
 	return layer.vhdLayers.find(vhd => allVhds.some(candidate => candidate.parentId === vhd.ownId))
 }
 
-export function optionLayerClass(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
-	if (layer.error || missingOptionParent(layer, allVhds)) {
-		return "chain-layer missing"
+function appLayerDisplay(layer: Pick<AppLayerInfo, "bootId" | "childFile" | "error" | "parentFile">): LayerDisplayInfo {
+	if (layer.error) {
+		return { state: "missing", role: "error", detail: layer.error }
 	}
 
-	return linkedOptionParent(layer, allVhds) || linkedOptionChild(layer, allVhds) ? "chain-layer linked" : "chain-layer"
+	if (layer.bootId?.sequenceNumber === 0) {
+		return layer.childFile
+			? { state: "linked", role: "parent", detail: `Parent layer · child ${layer.childFile.name}` }
+			: { state: "linked", role: "standalone", detail: `Parent layer · ${appLayerLabel(layer)}` }
+	}
+
+	if (layer.parentFile) {
+		return { state: "linked", role: "child", detail: `Child layer · parent ${layer.parentFile.name}` }
+	}
+
+	if (layer.bootId) {
+		return { state: "missing", role: "missing", detail: `Child layer · missing parent ${formatVersion(layer.bootId.sourceVersion)}` }
+	}
+
+	return { state: "missing", role: "error", detail: "Unknown APP" }
 }
 
-export function optionLayerDetail(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+function optionLayerDisplay(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]): LayerDisplayInfo {
 	if (layer.error) {
-		return layer.error
+		return { state: "missing", role: "error", detail: layer.error }
 	}
 
 	if (layer.vhdLayers.length === 0) {
-		return layer.bootId ? `No internal VHD found · ${optionLabel(layer)}` : "No internal VHD found"
+		return {
+			state: "standalone",
+			role: "standalone",
+			detail: layer.bootId ? `No internal VHD found · ${optionLabel(layer)}` : "No internal VHD found"
+		}
 	}
 
 	const missingParent = missingOptionParent(layer, allVhds)
 	if (missingParent?.parentId) {
-		return `Child VHD · missing parent ${missingParent.parentId.slice(0, 8)}`
+		return { state: "missing", role: "missing", detail: `Child VHD · missing parent ${missingParent.parentId.slice(0, 8)}` }
 	}
 
 	const linkedParent = linkedOptionParent(layer, allVhds)
 	if (linkedParent?.parentId) {
 		const parent = allVhds.find(candidate => candidate.ownId === linkedParent.parentId)
-		return `Child VHD · parent ${parent?.optionFileName ?? linkedParent.parentId.slice(0, 8)}`
+		return { state: "linked", role: "child", detail: `Child VHD · parent ${parent?.optionFileName ?? linkedParent.parentId.slice(0, 8)}` }
 	}
 
 	const linkedChild = linkedOptionChild(layer, allVhds)
 	if (linkedChild) {
 		const child = allVhds.find(candidate => candidate.parentId === linkedChild.ownId)
-		return `Parent VHD · child ${child?.optionFileName ?? linkedChild.name}`
+		return { state: "linked", role: "parent", detail: `Parent VHD · child ${child?.optionFileName ?? linkedChild.name}` }
 	}
 
 	const firstVhd = layer.vhdLayers[0]
-	return `${firstVhd.diskType} · ${firstVhd.name}`
+	return { state: "standalone", role: "standalone", detail: `${firstVhd.diskType} · ${firstVhd.name}` }
 }
 
 function rawVhdWarning(layers: VhdLayerInfo[]) {
@@ -157,7 +176,7 @@ function rawVhdWarning(layers: VhdLayerInfo[]) {
 async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<AppLayerInfo[]> {
 	const appFiles = files.filter(file => file.name.toLowerCase().endsWith(".app"))
 	const { openFscryptSource } = await import("../../../fsdecrypt/fsdecrypt")
-	const layers: AppLayerInfo[] = await Promise.all(
+	const layers: Array<Omit<AppLayerInfo, "display">> = await Promise.all(
 		appFiles.map(async file => {
 			try {
 				const source = await openFscryptSource(byteSourceFromPickedFile(file), { keyFile: keySource })
@@ -184,10 +203,13 @@ async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSour
 		return { ...layer, parentFile: parent?.file }
 	})
 
-	return withParents.map(layer => ({
-		...layer,
-		childFile: withParents.find(candidate => candidate.parentFile?.path === layer.file.path)?.file
-	}))
+	return withParents.map(layer => {
+		const withChild = {
+			...layer,
+			childFile: withParents.find(candidate => candidate.parentFile?.path === layer.file.path)?.file
+		}
+		return { ...withChild, display: appLayerDisplay(withChild) }
+	})
 }
 
 export async function buildMergeGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<MergeSelectionGroup[]> {
@@ -333,15 +355,21 @@ async function inspectOptionLayers(files: PickedFile[], keySource: ReadableByteS
 				}
 
 				const bootId = await collectFromOption(byteSourceFromPickedFile(file))
-				return { file, bootId, vhdLayers }
-			} catch (error) {
-				return {
-					file,
-					error: error instanceof Error ? error.message : "Could not read OPTION metadata",
-					vhdLayers
+					return {
+						file,
+						bootId,
+						vhdLayers,
+						display: { state: "standalone", role: "standalone", detail: "" } satisfies LayerDisplayInfo
+					}
+				} catch (error) {
+					return {
+						file,
+						error: error instanceof Error ? error.message : "Could not read OPTION metadata",
+						vhdLayers,
+						display: { state: "missing", role: "error", detail: error instanceof Error ? error.message : "Could not read OPTION metadata" } satisfies LayerDisplayInfo
+					}
 				}
-			}
-		})
+			})
 	)
 }
 
@@ -420,6 +448,7 @@ export async function buildOptionGroups(files: PickedFile[], keySource: Readable
 		const layers = optionLayers
 			.filter(layer => group.layerPaths.has(layer.file.path))
 			.sort((left, right) => optionChainDepth(left, allVhds) - optionChainDepth(right, allVhds))
+			.map(layer => ({ ...layer, display: optionLayerDisplay(layer, allVhds) }))
 		const hasErrors = layers.some(layer => layer.error)
 		const hasMissingParent = layers.some(layer => missingOptionParent(layer, allVhds))
 		const gameIds = new Set(layers.map(layer => layer.bootId?.gameId).filter(Boolean))

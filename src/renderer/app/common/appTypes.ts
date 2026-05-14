@@ -33,6 +33,14 @@ export type ActiveJob = {
 	label: string
 }
 
+export type LayerDisplayState = "linked" | "missing" | "standalone"
+
+export type LayerDisplayInfo = {
+	state: LayerDisplayState
+	detail: string
+	role: "parent" | "child" | "standalone" | "missing" | "error" | "raw"
+}
+
 export type OptionVhdSource = ReadableByteSource & {
 	optionGameId?: string
 	optionSequenceNumber?: number
@@ -49,6 +57,7 @@ export type OptionLayerInfo = {
 	bootId?: FscryptBootId
 	error?: string
 	vhdLayers: OptionVhdLayerInfo[]
+	display: LayerDisplayInfo
 }
 
 export type OptionSelectionGroup = {
@@ -72,6 +81,7 @@ export type AppLayerInfo = {
 	error?: string
 	parentFile?: PickedFile
 	childFile?: PickedFile
+	display: LayerDisplayInfo
 }
 
 export type MergeSelectionGroup = {

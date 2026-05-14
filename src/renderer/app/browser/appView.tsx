@@ -22,7 +22,7 @@ import {
 	Zap
 } from "lucide-react"
 
-import { formatBytes, formatDuration, formatEta, formatThroughput, formatVersion } from "../../base/common/format"
+import { formatBytes, formatDuration, formatEta, formatThroughput } from "../../base/common/format"
 import { basename, compactPath } from "../../base/common/path"
 import type { PickedFile } from "../../electron-api"
 import { MODES } from "../common/modes"
@@ -37,14 +37,17 @@ import type {
 	RunStats,
 	ToolMode
 } from "../common/appTypes"
-import {
-	appLayerLabel,
-	linkedOptionChild,
-	linkedOptionParent,
-	missingOptionParent,
-	optionLayerClass,
-	optionLayerDetail
-} from "../services/selectionService"
+
+function chainLayerClass(state: "linked" | "missing" | "standalone") {
+	return state === "standalone" ? "chain-layer" : `chain-layer ${state}`
+}
+
+function ChainLayerIcon({ state, role }: { state: "linked" | "missing" | "standalone"; role: string }) {
+	if (state === "missing") return <AlertTriangle size={14} />
+	if (state === "linked" && role !== "standalone") return <Link2 size={14} />
+	if (role === "raw") return <HardDriveDownload size={14} />
+	return <CircleDot size={14} />
+}
 
 function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolMode) => void }) {
 	const activeIndex = MODES.findIndex(item => item.mode === mode)
@@ -114,21 +117,11 @@ function MergeSelection({
 					)}
 					<div className="chain-layers">
 						{group.appLayers.map(layer => (
-							<div className={layer.parentFile || layer.bootId?.sequenceNumber === 0 ? "chain-layer linked" : "chain-layer missing"} key={layer.file.path}>
-								{layer.bootId?.sequenceNumber === 0 && !layer.childFile ? <CircleDot size={14} /> : layer.parentFile || layer.childFile ? <Link2 size={14} /> : <AlertTriangle size={14} />}
+							<div className={chainLayerClass(layer.display.state)} key={layer.file.path}>
+								<ChainLayerIcon state={layer.display.state} role={layer.display.role} />
 								<div>
 									<strong title={layer.file.name}>{layer.file.name}</strong>
-									<span>
-										{layer.error
-											? layer.error
-											: layer.bootId?.sequenceNumber === 0
-												? layer.childFile
-													? `Parent layer · child ${layer.childFile.name}`
-													: `Parent layer · ${appLayerLabel(layer)}`
-												: layer.parentFile
-													? `Child layer · parent ${layer.parentFile.name}`
-													: `Child layer · missing parent ${formatVersion(layer.bootId!.sourceVersion)}`}
-									</span>
+									<span>{layer.display.detail}</span>
 								</div>
 								<button
 									type="button"
@@ -143,7 +136,7 @@ function MergeSelection({
 						))}
 						{group.rawVhds.map(file => (
 							<div className="chain-layer linked" key={file.path}>
-								<HardDriveDownload size={14} />
+								<ChainLayerIcon state="linked" role="raw" />
 								<div>
 									<strong title={file.name}>{file.name}</strong>
 									<span>{formatBytes(file.size)}</span>
@@ -183,7 +176,6 @@ function OptionSelection({
 		return <div className="muted">None</div>
 	}
 
-	const allVhds = groups.flatMap(group => group.optionLayers.flatMap(layer => layer.vhdLayers))
 	return (
 		<div className="selected-list">
 			{groups.map((group, index) => (
@@ -208,30 +200,24 @@ function OptionSelection({
 						</div>
 					)}
 					<div className="chain-layers">
-						{group.optionLayers.map(layer => {
-							const className = optionLayerClass(layer, allVhds)
-							const hasParent = Boolean(linkedOptionParent(layer, allVhds))
-							const hasChild = Boolean(linkedOptionChild(layer, allVhds))
-							const isMissing = Boolean(layer.error || missingOptionParent(layer, allVhds))
-							return (
-								<div className={className} key={layer.file.path}>
-									{isMissing ? <AlertTriangle size={14} /> : hasParent || hasChild ? <Link2 size={14} /> : <CircleDot size={14} />}
-									<div>
-										<strong title={layer.file.name}>{layer.file.name}</strong>
-										<span>{optionLayerDetail(layer, allVhds)}</span>
-									</div>
-									<button
-										type="button"
-										className="remove-selection-button"
-										title={`Remove ${layer.file.name}`}
-										aria-label={`Remove ${layer.file.name}`}
-										onClick={() => onRemoveFile(layer.file.path)}
-									>
-										<X size={14} />
-									</button>
+						{group.optionLayers.map(layer => (
+							<div className={chainLayerClass(layer.display.state)} key={layer.file.path}>
+								<ChainLayerIcon state={layer.display.state} role={layer.display.role} />
+								<div>
+									<strong title={layer.file.name}>{layer.file.name}</strong>
+									<span>{layer.display.detail}</span>
 								</div>
-							)
-						})}
+								<button
+									type="button"
+									className="remove-selection-button"
+									title={`Remove ${layer.file.name}`}
+									aria-label={`Remove ${layer.file.name}`}
+									onClick={() => onRemoveFile(layer.file.path)}
+								>
+									<X size={14} />
+								</button>
+							</div>
+						))}
 					</div>
 				</div>
 			))}

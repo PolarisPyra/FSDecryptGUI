@@ -89,14 +89,25 @@ and avoid Electron or React imports.
 - Selection metadata is built in
   `src/renderer/app/services/selectionService.ts`. Use this for APP,
   OPTION, and VHD chain grouping and warnings.
+- Selection queue mutation, input-folder partitioning, mode job counts, and
+  blocking-warning summaries are owned by
+  `src/renderer/app/services/selectionQueue.ts`.
 - Exports are run through
   `src/renderer/app/services/extractionService.ts`. Batch completion
   notifications are emitted after the full batch finishes, not after each job.
+- Extraction batch planning, progress lifecycle, history records, cancellation,
+  and completion notifications are owned by
+  `src/renderer/app/services/extractionBatch.ts`.
+- OPTION-specific nested OPTION and VHD expansion is owned by
+  `src/renderer/app/services/optionExtraction.ts`.
 - File writing and progress accounting are handled by
   `src/renderer/app/services/extractionWriter.ts`, which writes through
   Electron IPC so the renderer never writes to disk directly.
 - Export history is persisted in
   `src/renderer/app/services/historyStorage.ts`.
+- Electron main-process IPC wiring stays in `src/electron/main.ts`; reusable
+  adapters live in `src/electron/chrome.ts`, `src/electron/dialogs.ts`, and
+  `src/electron/fileSystem.ts`.
 
 ### Change guidelines
 

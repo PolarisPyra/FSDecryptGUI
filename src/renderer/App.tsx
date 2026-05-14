@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { ReadableByteSource } from "../fsdecrypt/byte-source"
-import { isAbortError } from "./base/common/cancellation"
-import { formatDuration, formatLogExport, logExportName } from "./base/common/format"
-import { dirname, pathInFolder, stripExtension } from "./base/common/path"
+import { formatLogExport, logExportName } from "./base/common/format"
+import { dirname, pathInFolder } from "./base/common/path"
 import { PickedFile, RendererConfig, ScannedInputFolder, byteSourceFromPickedFile } from "./electron-api"
 import { AppView } from "./app/browser/appView"
 import { MODES } from "./app/common/modes"
@@ -11,36 +10,38 @@ import type {
 	BaseSelectionGroup,
 	CompletedResult,
 	ExportHistoryItem,
-	MergeSelectionGroup,
-	OptionSelectionGroup,
 	RunStats,
 	ToolMode
 } from "./app/common/appTypes"
-import { runBaseExport, runMergeExport, runOptionExport } from "./app/services/extractionService"
+import { runExtractionBatch } from "./app/services/extractionBatch"
 import { historyId, readStoredHistory, writeStoredHistory } from "./app/services/historyStorage"
 import {
-	appendPickedFiles,
-	buildBaseGroups,
-	buildMergeGroups,
-	buildOptionGroups,
+	analyzeInputScan,
+	appendToSelectionQueue,
+	emptySelectionQueues,
+	moveBaseGroupToMergeQueue,
+	refreshSelectionQueues,
+	removeFromSelectionQueue,
+	selectionSummary,
+	type SelectionQueues,
 	validateKeyFile
-} from "./app/services/selectionService"
+} from "./app/services/selectionQueue"
 
-type RunScope = "all" | ToolMode
+function idleSelectionAnalysis(): Record<ToolMode, boolean> {
+	return { container: false, option: false, vhd: false }
+}
+
+function activeSelectionAnalysis(mode?: ToolMode): Record<ToolMode, boolean> {
+	if (!mode) return { container: true, option: true, vhd: true }
+	return { ...idleSelectionAnalysis(), [mode]: true }
+}
 
 export function App() {
 	const [mode, setMode] = useState<ToolMode>("container")
 	const [inputRoot, setInputRoot] = useState("")
-	const [baseFiles, setBaseFiles] = useState<PickedFile[]>([])
-	const [baseGroups, setBaseGroups] = useState<BaseSelectionGroup[]>([])
-	const [isAnalyzingBase, setIsAnalyzingBase] = useState(false)
-	const [optionFiles, setOptionFiles] = useState<PickedFile[]>([])
-	const [optionGroups, setOptionGroups] = useState<OptionSelectionGroup[]>([])
-	const [isAnalyzingOptions, setIsAnalyzingOptions] = useState(false)
+	const [queues, setQueues] = useState<SelectionQueues>(emptySelectionQueues)
+	const [selectionAnalysis, setSelectionAnalysis] = useState<Record<ToolMode, boolean>>(idleSelectionAnalysis)
 	const [keyFile, setKeyFile] = useState<PickedFile | null>(null)
-	const [mergeFiles, setMergeFiles] = useState<PickedFile[]>([])
-	const [mergeGroups, setMergeGroups] = useState<MergeSelectionGroup[]>([])
-	const [isAnalyzingMerge, setIsAnalyzingMerge] = useState(false)
 	const [outputRoot, setOutputRoot] = useState("")
 	const [configPath, setConfigPath] = useState("")
 	const [isBusy, setIsBusy] = useState(false)
@@ -73,40 +74,28 @@ export function App() {
 		return () => window.clearInterval(interval)
 	}, [isBusy])
 
-	const allJobCount = baseFiles.length + optionFiles.length + mergeGroups.length
-	const modeJobCounts: Record<ToolMode, number> = {
-		container: baseFiles.length,
-		option: optionFiles.length,
-		vhd: mergeGroups.length
-	}
-	const modeWarningState: Record<ToolMode, boolean> = {
-		container: baseGroups.some(group => group.warning),
-		option: optionGroups.some(group => group.warning),
-		vhd: mergeGroups.some(group => group.warning)
-	}
-	const modeScopesWithJobs = MODES.map(item => item.mode).filter(item => modeJobCounts[item] > 0)
-	const hasMultipleModeJobs = modeScopesWithJobs.length > 1
-	const effectiveRunScope: RunScope = runAllModes && hasMultipleModeJobs ? "all" : mode
-	const effectiveJobCount = effectiveRunScope === "all" ? allJobCount : modeJobCounts[effectiveRunScope]
-	const allWarnings = Object.values(modeWarningState).some(Boolean)
+	const selection = selectionSummary(queues, mode, runAllModes)
+	const isAnalyzingBase = selectionAnalysis.container
+	const isAnalyzingOptions = selectionAnalysis.option
+	const isAnalyzingMerge = selectionAnalysis.vhd
 	const keyValidation = useMemo(() => validateKeyFile(keyFile), [keyFile])
 	const canRun =
 		!isBusy &&
 		Boolean(outputRoot) &&
-		effectiveJobCount > 0 &&
-		!(effectiveRunScope === "all" ? allWarnings : modeWarningState[effectiveRunScope]) &&
+		selection.effectiveJobCount > 0 &&
+		!selection.hasBlockingWarnings &&
 		keyValidation.status !== "invalid" &&
 		!isAnalyzingMerge &&
 		!isAnalyzingOptions &&
 		!isAnalyzingBase
 	const modeLabel = MODES.find(item => item.mode === mode)!.label.toUpperCase()
-	const effectiveScopeLabel = effectiveRunScope === "all" ? "ALL" : MODES.find(item => item.mode === effectiveRunScope)!.label.toUpperCase()
+	const effectiveScopeLabel = selection.effectiveRunScope === "all" ? "ALL" : MODES.find(item => item.mode === selection.effectiveRunScope)!.label.toUpperCase()
 	const keySource = useMemo(() => (keyFile ? byteSourceFromPickedFile(keyFile) : undefined), [keyFile])
 	const configFolder = useMemo(() => dirname(configPath), [configPath])
 	const runButtonLabel =
-		effectiveRunScope === "all"
-			? `Extract All${effectiveJobCount > 1 ? ` ${effectiveJobCount}` : ""}`
-			: `Extract ${effectiveScopeLabel}${effectiveJobCount > 1 ? ` ${effectiveJobCount}` : ""}`
+		selection.effectiveRunScope === "all"
+			? `Extract All${selection.effectiveJobCount > 1 ? ` ${selection.effectiveJobCount}` : ""}`
+			: `Extract ${effectiveScopeLabel}${selection.effectiveJobCount > 1 ? ` ${selection.effectiveJobCount}` : ""}`
 
 	const appendLog = (message: string) => {
 		const timestamp = new Date().toLocaleTimeString()
@@ -206,59 +195,18 @@ export function App() {
 
 	async function applyInputScan(scan: ScannedInputFolder, scanKeySource: ReadableByteSource | undefined = keySource) {
 		setInputRoot(scan.rootPath)
-		setBaseGroups([])
-		setOptionGroups([])
-		setMergeGroups([])
+		setQueues(emptySelectionQueues())
 		setResult(null)
 
-		setIsAnalyzingBase(true)
-		setIsAnalyzingOptions(true)
-		setIsAnalyzingMerge(true)
+		setSelectionAnalysis(activeSelectionAnalysis())
 		try {
-			const appGroups = await buildBaseGroups(scan.files.apps, scanKeySource)
-			const basePaths = new Set<string>()
-			const mergePaths = new Set(scan.files.vhds.map(file => file.path))
-			for (const group of appGroups) {
-				const target = group.hasChildLayer || group.rawVhds.length > 0 ? mergePaths : basePaths
-				for (const file of group.files) {
-					target.add(file.path)
-				}
-			}
-
-			const allAppFilesByPath = new Map(scan.files.apps.map(file => [file.path, file]))
-			const nextBaseFiles = [...basePaths].map(path => allAppFilesByPath.get(path)).filter((file): file is PickedFile => Boolean(file))
-			const nextMergeFiles = [
-				...scan.files.apps.filter(file => mergePaths.has(file.path)),
-				...scan.files.vhds
-			]
-			setBaseFiles(nextBaseFiles)
-			setOptionFiles(scan.files.options)
-			setMergeFiles(nextMergeFiles)
-
-			const [nextBaseGroups, nextOptionGroups, nextMergeGroups] = await Promise.all([
-				buildBaseGroups(nextBaseFiles, scanKeySource),
-				buildOptionGroups(scan.files.options, scanKeySource),
-				buildMergeGroups(nextMergeFiles, scanKeySource)
-			])
-			setBaseGroups(nextBaseGroups)
-			setOptionGroups(nextOptionGroups)
-			setMergeGroups(nextMergeGroups)
-			const detectedModes = [
-				nextBaseFiles.length > 0,
-				scan.files.options.length > 0,
-				nextMergeGroups.length > 0
-			].filter(Boolean).length
-			const firstDetectedMode: ToolMode =
-				nextBaseFiles.length > 0 ? "container" : scan.files.options.length > 0 ? "option" : nextMergeGroups.length > 0 ? "vhd" : mode
-			setMode(firstDetectedMode)
-			setRunAllModes(detectedModes > 1)
-			appendLog(
-				`Input folder scanned: ${nextBaseFiles.length.toLocaleString()} base APP(s), ${scan.files.options.length.toLocaleString()} OPTION(s), ${nextMergeFiles.length.toLocaleString()} merge file(s)`
-			)
+			const next = await analyzeInputScan(scan, scanKeySource, mode)
+			setQueues(next.queues)
+			setMode(next.nextMode)
+			setRunAllModes(next.runAllModes)
+			appendLog(next.logMessage)
 		} finally {
-			setIsAnalyzingBase(false)
-			setIsAnalyzingOptions(false)
-			setIsAnalyzingMerge(false)
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
@@ -293,96 +241,54 @@ export function App() {
 		if (files.length === 0) return
 
 		setInputRoot("")
+		const targetMode: ToolMode = isOption ? "option" : "container"
+		setSelectionAnalysis(activeSelectionAnalysis(targetMode))
 		if (isOption) {
-			const nextFiles = appendPickedFiles(optionFiles, files)
-			setOptionFiles(nextFiles)
-			setOptionGroups([])
-			setIsAnalyzingOptions(true)
 			try {
-				setOptionGroups(await buildOptionGroups(nextFiles, keySource))
+				setQueues(await appendToSelectionQueue(queues, "option", files, keySource))
 			} catch (error) {
 				appendLog(error instanceof Error ? `Could not analyze OPTION VHD selection: ${error.message}` : "Could not analyze OPTION VHD selection")
 			} finally {
-				setIsAnalyzingOptions(false)
+				setSelectionAnalysis(idleSelectionAnalysis())
 			}
 		} else {
-			const nextFiles = appendPickedFiles(baseFiles, files)
-			setBaseFiles(nextFiles)
-			setBaseGroups([])
-			setIsAnalyzingBase(true)
 			try {
-				setBaseGroups(await buildBaseGroups(nextFiles, keySource))
+				setQueues(await appendToSelectionQueue(queues, "container", files, keySource))
 			} catch (error) {
 				appendLog(error instanceof Error ? `Could not analyze APP selection: ${error.message}` : "Could not analyze APP selection")
 			} finally {
-				setIsAnalyzingBase(false)
+				setSelectionAnalysis(idleSelectionAnalysis())
 			}
 		}
 		setResult(null)
 	}
 
 	const refreshSelectionsForKey = async (nextKeySource: ReadableByteSource | undefined) => {
-		if (baseFiles.length > 0) {
-			setIsAnalyzingBase(true)
-			try {
-				setBaseGroups(await buildBaseGroups(baseFiles, nextKeySource))
-			} catch (error) {
-				appendLog(error instanceof Error ? `Could not refresh APP selection: ${error.message}` : "Could not refresh APP selection")
-			} finally {
-				setIsAnalyzingBase(false)
-			}
-		}
-		if (optionFiles.length > 0) {
-			setIsAnalyzingOptions(true)
-			try {
-				setOptionGroups(await buildOptionGroups(optionFiles, nextKeySource))
-			} catch (error) {
-				appendLog(error instanceof Error ? `Could not refresh OPTION VHD selection: ${error.message}` : "Could not refresh OPTION VHD selection")
-			} finally {
-				setIsAnalyzingOptions(false)
-			}
-		}
-		if (mergeFiles.length > 0) {
-			setIsAnalyzingMerge(true)
-			try {
-				setMergeGroups(await buildMergeGroups(mergeFiles, nextKeySource))
-			} catch (error) {
-				appendLog(error instanceof Error ? `Could not refresh merge selection: ${error.message}` : "Could not refresh merge selection")
-			} finally {
-				setIsAnalyzingMerge(false)
-			}
+		setSelectionAnalysis(activeSelectionAnalysis())
+		try {
+			setQueues(await refreshSelectionQueues(queues, nextKeySource))
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not refresh selections: ${error.message}` : "Could not refresh selections")
+		} finally {
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
 	const moveBaseGroupToMerge = async (group: BaseSelectionGroup) => {
 		if (isBusy) return
 
-		const movingPaths = new Set(group.files.map(file => file.path))
-		const nextBaseFiles = baseFiles.filter(file => !movingPaths.has(file.path))
-		const nextMergeFiles = appendPickedFiles(mergeFiles, group.files)
-		setBaseFiles(nextBaseFiles)
-		setMergeFiles(nextMergeFiles)
-		setBaseGroups([])
-		setMergeGroups([])
 		setResult(null)
 
-		setIsAnalyzingBase(true)
-		setIsAnalyzingMerge(true)
+		setSelectionAnalysis({ ...idleSelectionAnalysis(), container: true, vhd: true })
 		try {
-			const [nextBaseGroups, nextMergeGroups] = await Promise.all([
-				buildBaseGroups(nextBaseFiles, keySource),
-				buildMergeGroups(nextMergeFiles, keySource)
-			])
-			setBaseGroups(nextBaseGroups)
-			setMergeGroups(nextMergeGroups)
+			setQueues(await moveBaseGroupToMergeQueue(queues, group, keySource))
 			setMode("vhd")
 			setRunAllModes(false)
 			appendLog(`Moved ${group.label} to Merge`)
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not move selection to Merge: ${error.message}` : "Could not move selection to Merge")
 		} finally {
-			setIsAnalyzingBase(false)
-			setIsAnalyzingMerge(false)
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
@@ -439,89 +345,67 @@ export function App() {
 		if (files.length === 0) return
 
 		setInputRoot("")
-		const nextFiles = appendPickedFiles(mergeFiles, files)
-		setMergeFiles(nextFiles)
-		setMergeGroups([])
 		setResult(null)
 
-		setIsAnalyzingMerge(true)
+		setSelectionAnalysis(activeSelectionAnalysis("vhd"))
 		try {
-			setMergeGroups(await buildMergeGroups(nextFiles, keySource))
+			setQueues(await appendToSelectionQueue(queues, "vhd", files, keySource))
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not analyze merge selection: ${error.message}` : "Could not analyze merge selection")
 		} finally {
-			setIsAnalyzingMerge(false)
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
 	const removeBaseFile = async (path: string) => {
 		if (isBusy) return
 
-		const nextFiles = baseFiles.filter(file => file.path !== path)
-		setBaseFiles(nextFiles)
-		setBaseGroups([])
 		setResult(null)
-		if (nextFiles.length === 0) return
 
-		setIsAnalyzingBase(true)
+		setSelectionAnalysis(activeSelectionAnalysis("container"))
 		try {
-			setBaseGroups(await buildBaseGroups(nextFiles, keySource))
+			setQueues(await removeFromSelectionQueue(queues, "container", path, keySource))
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not analyze APP selection: ${error.message}` : "Could not analyze APP selection")
 		} finally {
-			setIsAnalyzingBase(false)
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
 	const removeOptionFile = async (path: string) => {
 		if (isBusy) return
 
-		const nextFiles = optionFiles.filter(file => file.path !== path)
-		setOptionFiles(nextFiles)
-		setOptionGroups([])
 		setResult(null)
-		if (nextFiles.length === 0) return
 
-		setIsAnalyzingOptions(true)
+		setSelectionAnalysis(activeSelectionAnalysis("option"))
 		try {
-			setOptionGroups(await buildOptionGroups(nextFiles, keySource))
+			setQueues(await removeFromSelectionQueue(queues, "option", path, keySource))
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not analyze OPTION VHD selection: ${error.message}` : "Could not analyze OPTION VHD selection")
 		} finally {
-			setIsAnalyzingOptions(false)
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
 	const removeMergeFile = async (path: string) => {
 		if (isBusy) return
 
-		const nextFiles = mergeFiles.filter(file => file.path !== path)
-		setMergeFiles(nextFiles)
-		setMergeGroups([])
 		setResult(null)
-		if (nextFiles.length === 0) return
 
-		setIsAnalyzingMerge(true)
+		setSelectionAnalysis(activeSelectionAnalysis("vhd"))
 		try {
-			setMergeGroups(await buildMergeGroups(nextFiles, keySource))
+			setQueues(await removeFromSelectionQueue(queues, "vhd", path, keySource))
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not analyze merge selection: ${error.message}` : "Could not analyze merge selection")
 		} finally {
-			setIsAnalyzingMerge(false)
+			setSelectionAnalysis(idleSelectionAnalysis())
 		}
 	}
 
 	const reset = () => {
 		setInputRoot("")
-		setBaseFiles([])
-		setBaseGroups([])
-		setIsAnalyzingBase(false)
-		setOptionFiles([])
-		setOptionGroups([])
-		setIsAnalyzingOptions(false)
-		setMergeFiles([])
-		setMergeGroups([])
-		setIsAnalyzingMerge(false)
+		setQueues(emptySelectionQueues())
+		setSelectionAnalysis(idleSelectionAnalysis())
 		setProgress(0)
 		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
 		setActiveJob(null)
@@ -586,7 +470,8 @@ export function App() {
 
 		const abortController = new AbortController()
 		abortControllerRef.current = abortController
-		runStartedAtRef.current = performance.now()
+		const startedAt = performance.now()
+		runStartedAtRef.current = startedAt
 		setIsBusy(true)
 		setProgress(0)
 		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
@@ -594,125 +479,23 @@ export function App() {
 		setLogs([])
 		setResult(null)
 
-		const elapsedDetails = (): CompletedResult["details"] => {
-			const ms = performance.now() - runStartedAtRef.current
-			const value = formatDuration(ms)
-			return [{ label: "Elapsed", value }]
-		}
-		const noteBytesWritten = (bytes: number) => {
-			setRunStats(current => ({
-				...current,
-				bytesWritten: current.bytesWritten + bytes,
-				elapsedMs: performance.now() - runStartedAtRef.current
-			}))
-		}
-		const extractionContext = {
-			outputRoot,
-			keySource,
-			optionFiles,
-			appendLog,
-			setProgress,
-			setRunStats
-		}
-
-		const baseJobs = baseFiles.map(file => ({
-			mode: "container" as ToolMode,
-			label: stripExtension(file.name),
-			sources: [file.name],
-			run: () => runBaseExport(extractionContext, file, elapsedDetails, abortController.signal, noteBytesWritten)
-		}))
-		const optionJobs = optionFiles.map(file => ({
-			mode: "option" as ToolMode,
-			label: stripExtension(file.name),
-			sources: [file.name],
-			run: () => runOptionExport(extractionContext, file, elapsedDetails, abortController.signal, noteBytesWritten)
-		}))
-		const mergeJobs = mergeGroups.map(group => ({
-			mode: "vhd" as ToolMode,
-			label: group.label,
-			sources: group.files.map(file => file.name),
-			run: () => runMergeExport(extractionContext, group, elapsedDetails, abortController.signal, noteBytesWritten)
-		}))
-		const jobs =
-			effectiveRunScope === "all"
-				? [...baseJobs, ...optionJobs, ...mergeJobs]
-				: effectiveRunScope === "vhd"
-					? mergeJobs
-					: effectiveRunScope === "option"
-						? optionJobs
-						: baseJobs
-
 		try {
-			appendLog(`Starting ${effectiveScopeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
-			let successfulJobs = 0
-			let failedJobs = 0
-
-			for (let index = 0; index < jobs.length; index++) {
-				const job = jobs[index]
-				const jobStartedAt = performance.now()
-				setProgress(0)
-				setActiveJob({ index: index + 1, total: jobs.length, label: job.label })
-				appendLog(`[${index + 1}/${jobs.length}] Exporting ${job.label}`)
-
-				try {
-					const nextResult = await job.run()
-					setResult(nextResult)
-					setProgress(100)
-					addHistory({
-						status: "success",
-						mode: job.mode,
-						label: job.label,
-						sources: job.sources,
-						outputFolder: nextResult.outputFolder,
-						outputSegments: nextResult.outputSegments,
-						outputRoot: nextResult.outputRoot,
-						outputSize: nextResult.outputSize,
-						durationMs: performance.now() - jobStartedAt
-					})
-					successfulJobs += 1
-				} catch (error) {
-					if (isAbortError(error)) {
-						addHistory({
-							status: "cancelled",
-							mode: job.mode,
-							label: job.label,
-							sources: job.sources,
-							durationMs: performance.now() - jobStartedAt,
-							error: "Cancelled"
-						})
-						throw error
-					}
-
-					const message = error instanceof Error ? error.message : "fsdecrypt failed"
-					appendLog(`ERROR: ${job.label}: ${message}`)
-					failedJobs += 1
-					addHistory({
-						status: "failed",
-						mode: job.mode,
-						label: job.label,
-						sources: job.sources,
-						durationMs: performance.now() - jobStartedAt,
-						error: message
-					})
-				}
-			}
-
-			appendLog("Done")
-			if (failedJobs > 0) {
-				await notifyUser("fsdecryptGUI finished with errors", `${successfulJobs}/${jobs.length} export(s) completed. ${failedJobs} failed.`)
-			} else {
-				await notifyUser("fsdecryptGUI extraction complete", `${successfulJobs}/${jobs.length} export(s) completed.`)
-			}
-		} catch (error) {
-			console.error(error)
-			if (isAbortError(error)) {
-				setProgress(0)
-				appendLog("Cancelled")
-				await notifyUser("fsdecryptGUI extraction cancelled", "The current extraction was cancelled.")
-			} else {
-				appendLog(error instanceof Error ? `ERROR: ${error.message}` : "ERROR: fsdecrypt failed")
-				await notifyUser("fsdecryptGUI extraction failed", error instanceof Error ? error.message : "fsdecrypt failed")
-			}
+			await runExtractionBatch({
+				queues,
+				runScope: selection.effectiveRunScope,
+				scopeLabel: effectiveScopeLabel,
+				outputRoot,
+				keySource,
+				signal: abortController.signal,
+				startedAt,
+				appendLog,
+				addHistory,
+				notifyUser,
+				setActiveJob,
+				setProgress,
+				setResult,
+				setRunStats
+			})
 		} finally {
 			abortControllerRef.current = null
 			setIsBusy(false)
@@ -727,13 +510,13 @@ export function App() {
 			isBusy={isBusy}
 			canRun={canRun}
 			runButtonLabel={runButtonLabel}
-			runAllModes={runAllModes && hasMultipleModeJobs}
-			hasMultipleModeJobs={hasMultipleModeJobs}
+			runAllModes={runAllModes && selection.hasMultipleModeJobs}
+			hasMultipleModeJobs={selection.hasMultipleModeJobs}
 			onRunAllModesChange={setRunAllModes}
-			selectedJobCount={effectiveJobCount}
-			baseGroups={baseGroups}
-			optionGroups={optionGroups}
-			mergeGroups={mergeGroups}
+			selectedJobCount={selection.effectiveJobCount}
+			baseGroups={queues.container.groups}
+			optionGroups={queues.option.groups}
+			mergeGroups={queues.vhd.groups}
 			isAnalyzingBase={isAnalyzingBase}
 			isAnalyzingOptions={isAnalyzingOptions}
 			isAnalyzingMerge={isAnalyzingMerge}
