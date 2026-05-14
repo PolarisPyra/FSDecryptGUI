@@ -40,6 +40,7 @@
 	"build": {
 		"appId": "dev.polaris.fsdecryptgui",
 		"productName": "fsdecryptGUI",
+		"artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
 		"files": [
 			"dist",
 			"dist-electron",

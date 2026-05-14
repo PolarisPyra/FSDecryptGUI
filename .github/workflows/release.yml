@@ -124,8 +124,6 @@ jobs:
             release/*.AppImage
             release/*.dmg
             release/*.exe
-            release/*.blockmap
-            release/latest*.yml
 
   publish:
     name: Publish GitHub Release
