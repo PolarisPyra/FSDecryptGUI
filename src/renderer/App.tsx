@@ -823,9 +823,10 @@ export function App() {
 
 		appendLog(`Detected ${fileSystem} filesystem in ${optionSource.outputFilename}`)
 
-		const folderName = stripExtension(optionSource.outputFilename)
-		let resultFolderName = folderName
-		let resultOutputSegments = outputSegmentsForFolder(outputRoot, folderName)
+		const folderName = stripExtension(file.name)
+		const outputFolderName = sanitizePathSegment(folderName)
+		const resultOutputSegments = outputSegmentsForFolder(outputRoot, outputFolderName)
+		const optionRootPrefix = ["option", optionSource.bootId.targetOption]
 		let totalBytes = Math.max(optionSource.size, 1)
 		let expandedContainerCount = 0
 		let expandedContainerBytes = 0
@@ -873,15 +874,11 @@ export function App() {
 				}
 			}
 		}
-		const writer = createLazyFolderWriter(folderName)
-		const makeResultFolder = (writerFolder: { outputFolder: string; outputSegments: string[] }) => {
-			resultFolderName = writerFolder.outputFolder
-			resultOutputSegments = writerFolder.outputSegments
-		}
 		const prefixWriter = (baseWriter: NtfsExtractionWriter, prefix: string[]): NtfsExtractionWriter => ({
 			createDirectory: path => baseWriter.createDirectory([...prefix, ...path]),
 			writeFile: (path, source) => baseWriter.writeFile([...prefix, ...path], source)
 		})
+		const writer = prefixWriter(createLazyFolderWriter(folderName), optionRootPrefix)
 		let optionVhdSourcesPromise: Promise<OptionVhdSource[]> | undefined
 		const collectOptionVhdSources = async () => {
 			optionVhdSourcesPromise ??= (async () => {
@@ -989,23 +986,14 @@ export function App() {
 				return baseWriter.createDirectory(path)
 			},
 			writeFile: async (path, source) => {
-				if (depth < 4 && source.name.toLowerCase().endsWith(".opt")) {
+				if (depth === 0 && path.length === 1 && source.name.toLowerCase().endsWith(".opt")) {
 					appendLog(`Expanding nested OPTION ${path.join("/")}`)
 					const nestedOptionSource = await openFscryptSource(source, {
 						expectedContainerType: FSCRYPT_CONTAINER_TYPE.OPTION,
 						keyFile: keySource,
 						onLog: appendLog
 					})
-					const nestedFolderName = stripExtension(nestedOptionSource.outputFilename)
-					let targetWriter: NtfsExtractionWriter
-					if (depth === 0 && path.length === 1) {
-						const rootNestedWriter = createLazyFolderWriter(nestedFolderName)
-						makeResultFolder(rootNestedWriter)
-						targetWriter = rootNestedWriter
-					} else {
-						targetWriter = prefixWriter(baseWriter, [...path.slice(0, -1), nestedFolderName])
-					}
-					const nestedResult = await extractOptionSource(nestedOptionSource, targetWriter, depth + 1, source.size)
+					const nestedResult = await extractOptionSource(nestedOptionSource, baseWriter, depth + 1, source.size)
 					expandedContainerCount += 1
 					expandedContainerBytes += source.size
 					nestedTotals.files += nestedResult.files
@@ -1016,7 +1004,12 @@ export function App() {
 
 				if (depth < 4 && source.name.toLowerCase().endsWith(".vhd")) {
 					appendLog(`Expanding VHD ${path.join("/")}`)
-					const targetWriter = path.length > 1 ? prefixWriter(baseWriter, path.slice(0, -1)) : baseWriter
+					const targetWriter =
+						depth > 0 && path.length === 1 && /^internal_\d+\.vhd$/i.test(source.name)
+							? prefixWriter(baseWriter, ["App"])
+							: path.length > 1
+								? prefixWriter(baseWriter, path.slice(0, -1))
+								: baseWriter
 					const nestedResult = await expandVhdSource(source, targetWriter, depth + 1, optionBootId)
 					expandedContainerCount += 1
 					expandedContainerBytes += source.size
@@ -1042,7 +1035,7 @@ export function App() {
 		const displayedDirectories = extracted.directories + nestedTotals.directories
 		const displayedBytes = extracted.bytes - expandedContainerBytes + nestedTotals.bytes
 		return {
-			outputFolder: resultFolderName,
+			outputFolder: outputFolderName,
 			outputSegments: resultOutputSegments,
 			outputRoot,
 			outputSize: displayedBytes,
