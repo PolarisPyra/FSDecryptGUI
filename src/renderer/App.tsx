@@ -689,6 +689,16 @@ export function App() {
 		}
 	}
 
+	const openOutputRootFolder = async () => {
+		if (!outputRoot) return
+
+		try {
+			await window.fsdecryptGUI.openOutputFolder(outputRoot, [])
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not open output folder: ${error.message}` : "Could not open output folder")
+		}
+	}
+
 	const openResultFolder = async () => {
 		if (!result) return
 
@@ -987,7 +997,21 @@ export function App() {
 						<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>
 						<hr />
 						<label>Output Root</label>
-						<strong className="truncate">{outputRoot ? basename(outputRoot) : "File > Select Output Folder"}</strong>
+						<div className="path-action-row">
+							<strong className="truncate" title={outputRoot || "File > Select Output Folder"}>
+								{outputRoot ? basename(outputRoot) : "File > Select Output Folder"}
+							</strong>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={!outputRoot}
+								title="Open output folder"
+								aria-label="Open output folder"
+								onClick={openOutputRootFolder}
+							>
+								<FolderOpen size={16} />
+							</button>
+						</div>
 						<hr />
 						<label>Config Folder</label>
 						<div className="path-action-row">
