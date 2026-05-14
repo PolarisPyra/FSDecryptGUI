@@ -18,11 +18,10 @@ import {
 	Zap
 } from "lucide-react"
 
-import { ReadableByteSource } from "../fsdecrypt/byte-source"
-import { extractExfatContents } from "../fsdecrypt/exfat"
-import { FSCRYPT_CONTAINER_TYPE, FscryptBootId, describeContainerType, openFscryptSource } from "../fsdecrypt/fsdecrypt"
-import { NtfsExtractionWriter, appContainersToVhdSources, extractInternalVhdSource, extractNtfsContents } from "../fsdecrypt/ntfs"
-import { VhdNtfsSource, openVhdChainNtfsSource } from "../fsdecrypt/vhd"
+import type { ReadableByteSource } from "../fsdecrypt/byte-source"
+import type { FscryptBootId } from "../fsdecrypt/fsdecrypt"
+import type { NtfsExtractionWriter } from "../fsdecrypt/ntfs"
+import type { VhdNtfsSource } from "../fsdecrypt/vhd"
 import { PickedFile, RendererConfig, byteSourceFromPickedFile } from "./electron-api"
 
 type ToolMode = "container" | "option" | "vhd"
@@ -274,6 +273,7 @@ function createFolderWriter(
 
 async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<AppLayerInfo[]> {
 	const appFiles = files.filter(file => file.name.toLowerCase().endsWith(".app"))
+	const { openFscryptSource } = await import("../fsdecrypt/fsdecrypt")
 	const layers = await Promise.all(
 		appFiles.map(async file => {
 			try {
@@ -735,6 +735,7 @@ export function App() {
 		signal: AbortSignal,
 		onBytesWritten: (bytes: number) => void
 	): Promise<CompletedResult> => {
+		const { extractNtfsContents } = await import("../fsdecrypt/ntfs")
 		const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
 		if (outputSegments.length > 0) {
 			await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
@@ -770,6 +771,10 @@ export function App() {
 		onBytesWritten: (bytes: number) => void
 	) => {
 		throwIfAborted(signal)
+		const [{ extractInternalVhdSource }, { openVhdChainNtfsSource }] = await Promise.all([
+			import("../fsdecrypt/ntfs"),
+			import("../fsdecrypt/vhd")
+		])
 		appendLog(`Opening APP container ${file.name}`)
 		const vhdSource = await extractInternalVhdSource(byteSourceFromPickedFile(file), {
 			keyFile: keySource,
@@ -787,6 +792,8 @@ export function App() {
 		onBytesWritten: (bytes: number) => void
 	) => {
 		throwIfAborted(signal)
+		const [{ extractExfatContents }, { FSCRYPT_CONTAINER_TYPE, describeContainerType, openFscryptSource }] =
+			await Promise.all([import("../fsdecrypt/exfat"), import("../fsdecrypt/fsdecrypt")])
 		const exfatSource = await openFscryptSource(byteSourceFromPickedFile(file), {
 			expectedContainerType: FSCRYPT_CONTAINER_TYPE.OPTION,
 			keyFile: keySource,
@@ -831,6 +838,10 @@ export function App() {
 		onBytesWritten: (bytes: number) => void
 	) => {
 		throwIfAborted(signal)
+		const [{ appContainersToVhdSources }, { openVhdChainNtfsSource }] = await Promise.all([
+			import("../fsdecrypt/ntfs"),
+			import("../fsdecrypt/vhd")
+		])
 		const appFiles = group.files.filter(file => file.name.toLowerCase().endsWith(".app"))
 		const rawVhdFiles = group.files.filter(file => !file.name.toLowerCase().endsWith(".app"))
 		const appVhds =

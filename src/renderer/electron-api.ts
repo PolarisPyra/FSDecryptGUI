@@ -1,4 +1,4 @@
-import { ReadableByteSource } from "../fsdecrypt/byte-source"
+import type { ReadableByteSource } from "../fsdecrypt/byte-source"
 
 export type PickedFile = {
 	path: string
