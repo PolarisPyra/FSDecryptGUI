@@ -6,6 +6,9 @@ const api = {
 	readConfig: () => ipcRenderer.invoke("config:read"),
 	updateConfig: patch => ipcRenderer.invoke("config:update", patch),
 	openConfigFolder: () => ipcRenderer.invoke("config:openFolder"),
+	copyText: text => ipcRenderer.invoke("app:copyText", text),
+	saveText: request => ipcRenderer.invoke("app:saveText", request),
+	notify: request => ipcRenderer.invoke("app:notify", request),
 	onConfigChanged: callback => {
 		const listener = (_event, config) => callback(config)
 		ipcRenderer.on("config:changed", listener)

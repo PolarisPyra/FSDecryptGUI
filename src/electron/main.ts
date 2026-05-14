@@ -1,6 +1,6 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from "electron"
+import { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, shell } from "electron"
 import { createDecipheriv } from "node:crypto"
-import { mkdir, open, rm, stat, type FileHandle } from "node:fs/promises"
+import { mkdir, open, rm, stat, writeFile, type FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -33,6 +33,16 @@ type DecryptFscryptRangeRequest = {
 type OutputFolderRequest = {
 	rootPath: string
 	segments: string[]
+}
+
+type SaveTextRequest = {
+	defaultName: string
+	content: string
+}
+
+type NotifyRequest = {
+	title: string
+	body: string
 }
 
 function hexBytes(hex: string) {
@@ -348,6 +358,55 @@ ipcMain.handle("config:openFolder", async () => {
 	const error = await shell.openPath(folder)
 	if (error) {
 		throw new Error(error)
+	}
+})
+
+ipcMain.handle("app:copyText", async (_event, text: string) => {
+	clipboard.writeText(text)
+})
+
+ipcMain.handle("app:saveText", async (_event, request: SaveTextRequest) => {
+	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
+	const result = window
+		? await dialog.showSaveDialog(window, {
+				title: "Save Log",
+				defaultPath: request.defaultName,
+				filters: [
+					{ name: "Text files", extensions: ["txt"] },
+					{ name: "All files", extensions: ["*"] }
+				]
+			})
+		: await dialog.showSaveDialog({
+				title: "Save Log",
+				defaultPath: request.defaultName,
+				filters: [
+					{ name: "Text files", extensions: ["txt"] },
+					{ name: "All files", extensions: ["*"] }
+				]
+			})
+
+	if (result.canceled || !result.filePath) {
+		return undefined
+	}
+
+	await writeFile(result.filePath, request.content, "utf8")
+	return result.filePath
+})
+
+ipcMain.handle("app:notify", async (_event, request: NotifyRequest) => {
+	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
+	if (window) {
+		if (!window.isFocused()) {
+			window.flashFrame(true)
+			window.once("focus", () => window.flashFrame(false))
+		}
+	}
+
+	if (Notification.isSupported()) {
+		new Notification({
+			title: request.title,
+			body: request.body
+		}).show()
 	}
 })
 

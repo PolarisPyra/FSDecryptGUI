@@ -4,6 +4,7 @@ import {
 	AlertTriangle,
 	CheckCircle2,
 	CircleDot,
+	Clipboard,
 	FileArchive,
 	FileKey,
 	FolderOpen,
@@ -12,6 +13,7 @@ import {
 	History,
 	Link2,
 	RotateCcw,
+	Save,
 	Terminal,
 	Trash2,
 	X,
@@ -39,6 +41,13 @@ type RunStats = {
 	elapsedMs: number
 	bytesWritten: number
 	totalBytes: number
+}
+
+type KeyValidation = {
+	status: "builtin" | "valid" | "invalid"
+	label: string
+	detail: string
+	error?: string
 }
 
 type OptionVhdSource = ReadableByteSource & {
@@ -176,6 +185,46 @@ function appendPickedFiles(current: PickedFile[], picked: PickedFile[]) {
 	}
 
 	return merged
+}
+
+function validateKeyFile(file: PickedFile | null): KeyValidation {
+	if (!file) {
+		return {
+			status: "builtin",
+			label: "Built-in",
+			detail: "Built-in key table active"
+		}
+	}
+
+	if (file.size === 16 || file.size === 32) {
+		return {
+			status: "valid",
+			label: "Custom",
+			detail: `Custom key active · ${file.size} bytes`
+		}
+	}
+
+	return {
+		status: "invalid",
+		label: "Invalid",
+		detail: `Expected 16 or 32 bytes · ${formatBytes(file.size)} selected`,
+		error: "External key file must be 16 or 32 bytes"
+	}
+}
+
+function logExportName() {
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+	return `fsdecryptGUI-${stamp}.log`
+}
+
+function pathInFolder(folder: string, filename: string) {
+	if (!folder) return filename
+	const separator = folder.includes("\\") ? "\\" : "/"
+	return `${folder.replace(/[\\/]+$/, "")}${separator}${filename}`
+}
+
+function formatLogExport(lines: string[]) {
+	return [`fsdecryptGUI log`, `Exported: ${new Date().toLocaleString()}`, "", ...lines].join("\n")
 }
 
 function formatDuration(ms: number) {
@@ -960,11 +1009,13 @@ export function App() {
 			: mode === "option"
 				? optionGroups.some(group => group.warning)
 				: baseGroups.some(group => group.warning)
+	const keyValidation = useMemo(() => validateKeyFile(keyFile), [keyFile])
 	const canRun =
 		!isBusy &&
 		Boolean(outputRoot) &&
 		selectedJobCount > 0 &&
 		!selectedWarnings &&
+		keyValidation.status !== "invalid" &&
 		!isAnalyzingMerge &&
 		!isAnalyzingOptions &&
 		!isAnalyzingBase
@@ -990,6 +1041,37 @@ export function App() {
 
 	const clearHistory = () => {
 		setHistory([])
+	}
+
+	const copyLogs = async () => {
+		try {
+			await window.fsdecryptGUI.copyText(formatLogExport(logs))
+			appendLog("Copied log to clipboard")
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not copy log: ${error.message}` : "Could not copy log")
+		}
+	}
+
+	const saveLogs = async () => {
+		try {
+			const savedPath = await window.fsdecryptGUI.saveText({
+				defaultName: pathInFolder(outputRoot, logExportName()),
+				content: formatLogExport(logs)
+			})
+			if (savedPath) {
+				appendLog(`Saved log to ${savedPath}`)
+			}
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not save log: ${error.message}` : "Could not save log")
+		}
+	}
+
+	const notifyUser = async (title: string, body: string) => {
+		try {
+			await window.fsdecryptGUI.notify({ title, body })
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not send notification: ${error.message}` : "Could not send notification")
+		}
 	}
 
 	useEffect(() => {
@@ -1054,21 +1136,11 @@ export function App() {
 		setResult(null)
 	}
 
-	const chooseKey = async () => {
-		const files = await window.fsdecryptGUI.pickFiles({
-			title: "Choose key file",
-			filters: [
-				{ name: "Key files", extensions: ["bin"] },
-				{ name: "All files", extensions: ["*"] }
-			]
-		})
-		if (!files[0]) return
-		setKeyFile(files[0])
-		await window.fsdecryptGUI.updateConfig({ keyFilePath: files[0].path })
+	const refreshSelectionsForKey = async (nextKeySource: ReadableByteSource | undefined) => {
 		if (baseFiles.length > 0) {
 			setIsAnalyzingBase(true)
 			try {
-				setBaseGroups(await buildBaseGroups(baseFiles, byteSourceFromPickedFile(files[0])))
+				setBaseGroups(await buildBaseGroups(baseFiles, nextKeySource))
 			} catch (error) {
 				appendLog(error instanceof Error ? `Could not refresh APP selection: ${error.message}` : "Could not refresh APP selection")
 			} finally {
@@ -1078,7 +1150,7 @@ export function App() {
 		if (optionFiles.length > 0) {
 			setIsAnalyzingOptions(true)
 			try {
-				setOptionGroups(await buildOptionGroups(optionFiles, byteSourceFromPickedFile(files[0])))
+				setOptionGroups(await buildOptionGroups(optionFiles, nextKeySource))
 			} catch (error) {
 				appendLog(error instanceof Error ? `Could not refresh OPTION VHD selection: ${error.message}` : "Could not refresh OPTION VHD selection")
 			} finally {
@@ -1088,14 +1160,54 @@ export function App() {
 		if (mergeFiles.length > 0) {
 			setIsAnalyzingMerge(true)
 			try {
-				setMergeGroups(await buildMergeGroups(mergeFiles, byteSourceFromPickedFile(files[0])))
+				setMergeGroups(await buildMergeGroups(mergeFiles, nextKeySource))
 			} catch (error) {
 				appendLog(error instanceof Error ? `Could not refresh merge selection: ${error.message}` : "Could not refresh merge selection")
 			} finally {
 				setIsAnalyzingMerge(false)
 			}
 		}
-		setResult(null)
+	}
+
+	const chooseKey = async () => {
+		const files = await window.fsdecryptGUI.pickFiles({
+			title: "Choose key file",
+			filters: [
+				{ name: "Key files", extensions: ["bin"] },
+				{ name: "All files", extensions: ["*"] }
+			]
+		})
+		if (!files[0]) return
+		const nextKeyFile = files[0]
+		const validation = validateKeyFile(nextKeyFile)
+		if (validation.status === "invalid") {
+			appendLog(`Invalid key file ${nextKeyFile.name}: ${validation.error}`)
+			return
+		}
+
+		try {
+			setKeyFile(nextKeyFile)
+			await window.fsdecryptGUI.updateConfig({ keyFilePath: nextKeyFile.path })
+			appendLog(`Custom key selected: ${nextKeyFile.name} (${nextKeyFile.size} bytes)`)
+			await refreshSelectionsForKey(byteSourceFromPickedFile(nextKeyFile))
+			setResult(null)
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not select key: ${error.message}` : "Could not select key")
+		}
+	}
+
+	const clearKey = async () => {
+		if (isBusy) return
+
+		try {
+			setKeyFile(null)
+			await window.fsdecryptGUI.updateConfig({ keyFilePath: null })
+			appendLog("Custom key cleared; using built-in keys")
+			await refreshSelectionsForKey(undefined)
+			setResult(null)
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not clear key: ${error.message}` : "Could not clear key")
+		}
 	}
 
 	const chooseApps = async () => {
@@ -1621,6 +1733,8 @@ export function App() {
 
 		try {
 			appendLog(`Starting ${modeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
+			let successfulJobs = 0
+			let failedJobs = 0
 
 			for (let index = 0; index < jobs.length; index++) {
 				const job = jobs[index]
@@ -1644,6 +1758,7 @@ export function App() {
 						outputSize: nextResult.outputSize,
 						durationMs: performance.now() - jobStartedAt
 					})
+					successfulJobs += 1
 				} catch (error) {
 					if (isAbortError(error)) {
 						addHistory({
@@ -1659,6 +1774,7 @@ export function App() {
 
 					const message = error instanceof Error ? error.message : "fsdecrypt failed"
 					appendLog(`ERROR: ${job.label}: ${message}`)
+					failedJobs += 1
 					addHistory({
 						status: "failed",
 						mode,
@@ -1671,13 +1787,20 @@ export function App() {
 			}
 
 			appendLog("Done")
+			if (failedJobs > 0) {
+				await notifyUser("fsdecryptGUI finished with errors", `${successfulJobs}/${jobs.length} export(s) completed. ${failedJobs} failed.`)
+			} else {
+				await notifyUser("fsdecryptGUI extraction complete", `${successfulJobs}/${jobs.length} export(s) completed.`)
+			}
 		} catch (error) {
 			console.error(error)
 			if (isAbortError(error)) {
 				setProgress(0)
 				appendLog("Cancelled")
+				await notifyUser("fsdecryptGUI extraction cancelled", "The current extraction was cancelled.")
 			} else {
 				appendLog(error instanceof Error ? `ERROR: ${error.message}` : "ERROR: fsdecrypt failed")
+				await notifyUser("fsdecryptGUI extraction failed", error instanceof Error ? error.message : "fsdecrypt failed")
 			}
 		} finally {
 			abortControllerRef.current = null
@@ -1743,7 +1866,21 @@ export function App() {
 						)}
 						<hr />
 						<label>Key</label>
-						<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>
+						<div className={`key-status ${keyValidation.status}`}>
+							{keyValidation.status === "invalid" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+							<div>
+								<div className="key-heading">
+									<strong className="truncate" title={keyFile?.path ?? keyValidation.label}>{keyFile?.name ?? keyValidation.label}</strong>
+									<span>{keyValidation.label}</span>
+								</div>
+								<span>{keyValidation.detail}</span>
+							</div>
+							{keyFile && (
+								<button type="button" className="icon-button" disabled={isBusy} title="Clear key" aria-label="Clear key" onClick={clearKey}>
+									<X size={15} />
+								</button>
+							)}
+						</div>
 						<hr />
 						<label>Output Root</label>
 						<div className="path-action-row has-two-actions">
@@ -1866,8 +2003,18 @@ export function App() {
 
 				<section className="log-panel">
 					<div className="log-title">
-						<Terminal size={16} />
-						Log
+						<div className="log-title-label">
+							<Terminal size={16} />
+							Log
+						</div>
+						<div className="log-actions">
+							<button type="button" className="icon-button" disabled={logs.length === 0} title="Copy log" aria-label="Copy log" onClick={copyLogs}>
+								<Clipboard size={15} />
+							</button>
+							<button type="button" className="icon-button" disabled={logs.length === 0} title="Save log" aria-label="Save log" onClick={saveLogs}>
+								<Save size={15} />
+							</button>
+						</div>
 					</div>
 					<div className="terminal" ref={terminalRef}>
 						{logs.map((line, index) => (

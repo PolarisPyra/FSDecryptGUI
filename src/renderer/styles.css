@@ -9,6 +9,29 @@
 
 * {
 	box-sizing: border-box;
+	scrollbar-color: #5b6873 transparent;
+	scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+	width: 0.5rem;
+	height: 0.5rem;
+}
+
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+	border: 2px solid transparent;
+	border-radius: 999px;
+	background: #5b6873;
+	background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+	background: #73808b;
+	background-clip: padding-box;
 }
 
 html,
@@ -405,6 +428,64 @@ hr {
 	grid-template-columns: minmax(0, 1fr) 2rem 2rem;
 }
 
+.key-status {
+	display: grid;
+	grid-template-columns: 1rem minmax(0, 1fr) auto;
+	gap: 0.55rem;
+	align-items: start;
+	padding: 0.55rem;
+	border: 1px solid #2b3640;
+	border-radius: 6px;
+	background: #0f151b;
+}
+
+.key-status > svg {
+	flex: 0 0 auto;
+	margin-top: 0.15rem;
+	color: #8fd7b3;
+}
+
+.key-status.invalid {
+	border-color: rgba(255, 138, 128, 0.36);
+	background: #1b1213;
+}
+
+.key-status.invalid > svg {
+	color: #ff8a80;
+}
+
+.key-status.builtin > svg {
+	color: #91a0ad;
+}
+
+.key-status span {
+	color: #91a0ad;
+	font-size: 0.78rem;
+}
+
+.key-heading {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
+}
+
+.key-heading strong {
+	flex: 1 1 auto;
+}
+
+.key-heading > span {
+	flex: 0 0 auto;
+	padding: 0.1rem 0.4rem;
+	border: 1px solid #33414c;
+	border-radius: 999px;
+	background: #182028;
+	color: #a5b0ba;
+	font-size: 0.68rem;
+	font-weight: 750;
+	text-transform: uppercase;
+}
+
 .icon-button {
 	width: 2rem;
 	height: 2rem;
@@ -517,10 +598,19 @@ progress::-webkit-progress-value {
 .log-title {
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	gap: 0.45rem;
 	padding: 0.75rem 0.9rem;
 	border-bottom: 1px solid #2b3640;
 	font-weight: 700;
+}
+
+.log-title-label,
+.log-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
 }
 
 .terminal {

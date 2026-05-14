@@ -16,6 +16,9 @@ export type ElectronApi = {
 	readConfig: () => Promise<RendererConfig>
 	updateConfig: (patch: ConfigPatch) => Promise<RendererConfig>
 	openConfigFolder: () => Promise<void>
+	copyText: (text: string) => Promise<void>
+	saveText: (request: SaveTextRequest) => Promise<string | undefined>
+	notify: (request: NotifyRequest) => Promise<void>
 	onConfigChanged: (callback: (config: RendererConfig) => void) => () => void
 	readRange: (filePath: string, offset: number, length: number) => Promise<ArrayBuffer>
 	decryptFscryptRange: (request: DecryptFscryptRangeRequest) => Promise<ArrayBuffer>
@@ -36,6 +39,16 @@ export type RendererConfig = {
 export type ConfigPatch = {
 	outputRoot?: string | null
 	keyFilePath?: string | null
+}
+
+export type SaveTextRequest = {
+	defaultName: string
+	content: string
+}
+
+export type NotifyRequest = {
+	title: string
+	body: string
 }
 
 export type DecryptFscryptRangeRequest = {

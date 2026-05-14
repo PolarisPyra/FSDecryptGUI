@@ -1,7 +1,7 @@
 {
 	"name": "fsdecrypt-gui",
 	"private": true,
-	"version": "0.1.11",
+	"version": "0.1.12",
 	"description": "Desktop GUI for extracting fscrypt APP, option, and VHD chain contents.",
 	"author": "PolarisPyra",
 	"type": "module",
@@ -10,11 +10,11 @@
 		"dev": "concurrently -k -n vite,electron-ts,electron \"vite --host 127.0.0.1 --port 5173 --strictPort\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on dist-electron/main.js http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
 		"build": "node scripts/build-electron.mjs && vite build",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
-		"package": "pnpm build && electron-builder --dir",
-		"dist": "pnpm build && electron-builder",
-		"dist:linux": "pnpm build && electron-builder --linux AppImage --publish never",
-		"dist:mac": "pnpm build && electron-builder --mac dmg --publish never",
-		"dist:win": "pnpm build && electron-builder --win nsis --publish never"
+		"package": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --dir",
+		"dist": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder",
+		"dist:linux": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --linux AppImage --publish never",
+		"dist:mac": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --mac dmg --publish never",
+		"dist:win": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --win nsis --publish never"
 	},
 	"dependencies": {
 		"aes-js": "^3.1.2",
@@ -50,6 +50,7 @@
 			"output": "release"
 		},
 		"linux": {
+			"icon": "build/icon.png",
 			"target": [
 				"AppImage",
 				"dir"
