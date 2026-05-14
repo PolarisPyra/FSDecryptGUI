@@ -12,6 +12,7 @@ export type ElectronApi = {
 		filters?: Array<{ name: string; extensions: string[] }>
 		multiple?: boolean
 	}) => Promise<PickedFile[]>
+	selectOutputFolder: () => Promise<string | undefined>
 	readConfig: () => Promise<RendererConfig>
 	updateConfig: (patch: ConfigPatch) => Promise<RendererConfig>
 	openConfigFolder: () => Promise<void>

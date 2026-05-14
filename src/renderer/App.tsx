@@ -7,6 +7,7 @@ import {
 	FileArchive,
 	FileKey,
 	FolderOpen,
+	FolderPlus,
 	HardDriveDownload,
 	History,
 	Link2,
@@ -689,6 +690,14 @@ export function App() {
 		}
 	}
 
+	const selectOutputFolder = async () => {
+		try {
+			await window.fsdecryptGUI.selectOutputFolder()
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not select output folder: ${error.message}` : "Could not select output folder")
+		}
+	}
+
 	const openOutputRootFolder = async () => {
 		if (!outputRoot) return
 
@@ -997,10 +1006,20 @@ export function App() {
 						<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>
 						<hr />
 						<label>Output Root</label>
-						<div className="path-action-row">
+						<div className="path-action-row has-two-actions">
 							<strong className="truncate" title={outputRoot || "File > Select Output Folder"}>
 								{outputRoot ? basename(outputRoot) : "File > Select Output Folder"}
 							</strong>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={isBusy}
+								title="Select output folder"
+								aria-label="Select output folder"
+								onClick={selectOutputFolder}
+							>
+								<FolderPlus size={16} />
+							</button>
 							<button
 								type="button"
 								className="icon-button"

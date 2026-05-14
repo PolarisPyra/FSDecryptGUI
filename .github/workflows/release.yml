@@ -155,11 +155,14 @@ jobs:
             exit 1
           fi
 
+          notes="Full Changelog: https://github.com/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}"
+
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" --notes "${notes}"
             gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
           else
             gh release create "${RELEASE_TAG}" "${assets[@]}" \
               --target "${GITHUB_SHA}" \
               --title "fsdecryptGUI ${RELEASE_TAG}" \
-              --generate-notes
+              --notes "${notes}"
           fi

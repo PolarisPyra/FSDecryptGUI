@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron")
 
 const api = {
 	pickFiles: options => ipcRenderer.invoke("dialog:pickFiles", options),
+	selectOutputFolder: () => ipcRenderer.invoke("dialog:selectOutputFolder"),
 	readConfig: () => ipcRenderer.invoke("config:read"),
 	updateConfig: patch => ipcRenderer.invoke("config:update", patch),
 	openConfigFolder: () => ipcRenderer.invoke("config:openFolder"),

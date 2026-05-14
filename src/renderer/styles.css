@@ -376,6 +376,10 @@ hr {
 	gap: 0.45rem;
 }
 
+.path-action-row.has-two-actions {
+	grid-template-columns: minmax(0, 1fr) 2rem 2rem;
+}
+
 .icon-button {
 	width: 2rem;
 	height: 2rem;

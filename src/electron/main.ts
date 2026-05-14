@@ -328,6 +328,15 @@ ipcMain.handle("dialog:pickFiles", async (_event, options: PickFileOptions) => {
 	)
 })
 
+ipcMain.handle("dialog:selectOutputFolder", async (_event) => {
+	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
+	if (!window) {
+		return undefined
+	}
+
+	return chooseOutputFolder(window)
+})
+
 ipcMain.handle("config:read", async () => readRendererConfig())
 
 ipcMain.handle("config:update", async (_event, patch: ConfigPatch) => updateConfig(patch))
