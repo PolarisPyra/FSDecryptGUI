@@ -334,7 +334,7 @@ hr {
 
 .chain-layer {
 	display: grid;
-	grid-template-columns: 1rem minmax(0, 1fr);
+	grid-template-columns: 1rem minmax(0, 1fr) 1.8rem;
 	gap: 0.5rem;
 	align-items: start;
 	padding: 0.5rem;
@@ -342,7 +342,7 @@ hr {
 	background: #0f151b;
 }
 
-.chain-layer.linked svg,
+.chain-layer.linked > svg,
 .history-row.success svg {
 	color: #8fd7b3;
 }
@@ -351,7 +351,7 @@ hr {
 	color: #91a0ad;
 }
 
-.chain-layer.missing svg,
+.chain-layer.missing > svg,
 .history-row.failed svg,
 .history-row.cancelled svg {
 	color: #ff8a80;
@@ -360,6 +360,22 @@ hr {
 .chain-layer.missing {
 	border: 1px solid rgba(255, 138, 128, 0.26);
 	background: #1b1213;
+}
+
+.remove-selection-button {
+	align-self: center;
+	width: 1.8rem;
+	height: 1.8rem;
+	padding: 0;
+	color: #91a0ad;
+	background: transparent;
+	border-color: transparent;
+}
+
+.remove-selection-button:hover:not(:disabled) {
+	color: #f5f8fa;
+	background: #202b35;
+	border-color: #33414c;
 }
 
 .file-row + .file-row {

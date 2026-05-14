@@ -701,7 +701,15 @@ function ContainerSelection({ files }: { files: PickedFile[] }) {
 	)
 }
 
-function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]; isAnalyzing: boolean }) {
+function MergeSelection({
+	groups,
+	isAnalyzing,
+	onRemoveFile
+}: {
+	groups: MergeSelectionGroup[]
+	isAnalyzing: boolean
+	onRemoveFile: (path: string) => void
+}) {
 	if (isAnalyzing) {
 		return <div className="muted">Reading APP chain metadata...</div>
 	}
@@ -743,8 +751,17 @@ function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]
 												: layer.parentFile
 													? `Child layer · parent ${layer.parentFile.name}`
 													: `Child layer · missing parent ${formatVersion(layer.bootId!.sourceVersion)}`}
-									</span>
+											</span>
 								</div>
+								<button
+									type="button"
+									className="remove-selection-button"
+									title={`Remove ${layer.file.name}`}
+									aria-label={`Remove ${layer.file.name}`}
+									onClick={() => onRemoveFile(layer.file.path)}
+								>
+									<X size={14} />
+								</button>
 							</div>
 						))}
 						{group.rawVhds.map(file => (
@@ -754,6 +771,15 @@ function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]
 									<strong title={file.name}>{file.name}</strong>
 									<span>{formatBytes(file.size)}</span>
 								</div>
+								<button
+									type="button"
+									className="remove-selection-button"
+									title={`Remove ${file.name}`}
+									aria-label={`Remove ${file.name}`}
+									onClick={() => onRemoveFile(file.path)}
+								>
+									<X size={14} />
+								</button>
 							</div>
 						))}
 					</div>
@@ -763,7 +789,15 @@ function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]
 	)
 }
 
-function OptionSelection({ groups, isAnalyzing }: { groups: OptionSelectionGroup[]; isAnalyzing: boolean }) {
+function OptionSelection({
+	groups,
+	isAnalyzing,
+	onRemoveFile
+}: {
+	groups: OptionSelectionGroup[]
+	isAnalyzing: boolean
+	onRemoveFile: (path: string) => void
+}) {
 	if (isAnalyzing) {
 		return <div className="muted">Reading OPTION VHD metadata...</div>
 	}
@@ -803,6 +837,15 @@ function OptionSelection({ groups, isAnalyzing }: { groups: OptionSelectionGroup
 										<strong title={layer.file.name}>{layer.file.name}</strong>
 										<span>{optionLayerDetail(layer, allVhds)}</span>
 									</div>
+									<button
+										type="button"
+										className="remove-selection-button"
+										title={`Remove ${layer.file.name}`}
+										aria-label={`Remove ${layer.file.name}`}
+										onClick={() => onRemoveFile(layer.file.path)}
+									>
+										<X size={14} />
+									</button>
 								</div>
 							)
 						})}
@@ -1070,6 +1113,63 @@ export function App() {
 		setMergeFiles(nextFiles)
 		setMergeGroups([])
 		setResult(null)
+
+		setIsAnalyzingMerge(true)
+		try {
+			setMergeGroups(await buildMergeGroups(nextFiles, keySource))
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not analyze merge selection: ${error.message}` : "Could not analyze merge selection")
+		} finally {
+			setIsAnalyzingMerge(false)
+		}
+	}
+
+	const removeBaseFile = async (path: string) => {
+		if (isBusy) return
+
+		const nextFiles = baseFiles.filter(file => file.path !== path)
+		setBaseFiles(nextFiles)
+		setBaseGroups([])
+		setResult(null)
+		if (nextFiles.length === 0) return
+
+		setIsAnalyzingBase(true)
+		try {
+			setBaseGroups(await buildBaseGroups(nextFiles, keySource))
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not analyze APP selection: ${error.message}` : "Could not analyze APP selection")
+		} finally {
+			setIsAnalyzingBase(false)
+		}
+	}
+
+	const removeOptionFile = async (path: string) => {
+		if (isBusy) return
+
+		const nextFiles = optionFiles.filter(file => file.path !== path)
+		setOptionFiles(nextFiles)
+		setOptionGroups([])
+		setResult(null)
+		if (nextFiles.length === 0) return
+
+		setIsAnalyzingOptions(true)
+		try {
+			setOptionGroups(await buildOptionGroups(nextFiles, keySource))
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not analyze OPTION VHD selection: ${error.message}` : "Could not analyze OPTION VHD selection")
+		} finally {
+			setIsAnalyzingOptions(false)
+		}
+	}
+
+	const removeMergeFile = async (path: string) => {
+		if (isBusy) return
+
+		const nextFiles = mergeFiles.filter(file => file.path !== path)
+		setMergeFiles(nextFiles)
+		setMergeGroups([])
+		setResult(null)
+		if (nextFiles.length === 0) return
 
 		setIsAnalyzingMerge(true)
 		try {
@@ -1635,11 +1735,11 @@ export function App() {
 					<div className="info-block selected-block">
 						<label>Selected</label>
 						{mode === "vhd" ? (
-							<MergeSelection groups={mergeGroups} isAnalyzing={isAnalyzingMerge} />
+							<MergeSelection groups={mergeGroups} isAnalyzing={isAnalyzingMerge} onRemoveFile={removeMergeFile} />
 						) : mode === "option" ? (
-							<OptionSelection groups={optionGroups} isAnalyzing={isAnalyzingOptions} />
+							<OptionSelection groups={optionGroups} isAnalyzing={isAnalyzingOptions} onRemoveFile={removeOptionFile} />
 						) : (
-							<MergeSelection groups={baseGroups} isAnalyzing={isAnalyzingBase} />
+							<MergeSelection groups={baseGroups} isAnalyzing={isAnalyzingBase} onRemoveFile={removeBaseFile} />
 						)}
 						<hr />
 						<label>Key</label>
