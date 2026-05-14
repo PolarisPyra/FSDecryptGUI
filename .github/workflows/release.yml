@@ -1,0 +1,166 @@
+name: Release Builds
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to release. Leave blank to use package.json."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  detect-version:
+    name: Detect version update
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.detect.outputs.should_release }}
+      version: ${{ steps.detect.outputs.version }}
+      tag: ${{ steps.detect.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Detect package version change
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_version="$(node -p "require('./package.json').version")"
+          requested_version="${{ inputs.version }}"
+
+          if [[ -n "${requested_version}" && "${requested_version}" != "${current_version}" ]]; then
+            echo "::error::workflow_dispatch version '${requested_version}' does not match package.json version '${current_version}'."
+            exit 1
+          fi
+
+          previous_version=""
+          if git rev-parse HEAD^ >/dev/null 2>&1 && git show HEAD^:package.json >/tmp/previous-package.json 2>/dev/null; then
+            previous_version="$(node -p "require('/tmp/previous-package.json').version")"
+          fi
+
+          should_release=false
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${current_version}" != "${previous_version}" ]]; then
+            should_release=true
+          fi
+
+          echo "should_release=${should_release}" >> "${GITHUB_OUTPUT}"
+          echo "version=${current_version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${current_version}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${should_release}" == "true" ]]; then
+            echo "Release build requested for v${current_version}."
+          else
+            echo "package.json changed, but version stayed at ${current_version}; skipping release."
+          fi
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: detect-version
+    if: needs.detect-version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux AppImage
+            os: ubuntu-latest
+            script: pnpm run dist:linux
+            artifact: fsdecryptGUI-linux
+          - name: macOS DMG
+            os: macos-latest
+            script: pnpm run dist:mac
+            artifact: fsdecryptGUI-macos
+          - name: Windows NSIS
+            os: windows-latest
+            script: pnpm run dist:win
+            artifact: fsdecryptGUI-windows
+    runs-on: ${{ matrix.os }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.18.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build installer
+        run: ${{ matrix.script }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            release/*.AppImage
+            release/*.dmg
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - detect-version
+      - build
+    if: needs.detect-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.detect-version.outputs.tag }}
+    steps:
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=(release-assets/*)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "::error::No release assets were downloaded."
+            exit 1
+          fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${assets[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "fsdecryptGUI ${RELEASE_TAG}" \
+              --generate-notes
+          fi

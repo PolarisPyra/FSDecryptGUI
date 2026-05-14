@@ -23,6 +23,21 @@ For distributable installers:
 pnpm dist
 ```
 
+## Releases
+
+GitHub Actions builds release installers automatically when `package.json` gets
+a new `version` on `main`.
+
+```sh
+pnpm version patch
+git push --follow-tags
+```
+
+The release workflow builds Linux AppImage, macOS DMG, and Windows NSIS
+installers on native GitHub-hosted runners, then uploads them to the GitHub
+Release named `v<package version>`. The workflow can also be run manually from
+the Actions tab for the current `package.json` version.
+
 ## Notes
 
 - `Base` decrypts an APP/OS container, finds the internal VHD, mounts the NTFS view, and extracts files.

@@ -11,7 +11,10 @@
 		"build": "node scripts/build-electron.mjs && vite build",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
 		"package": "pnpm build && electron-builder --dir",
-		"dist": "pnpm build && electron-builder"
+		"dist": "pnpm build && electron-builder",
+		"dist:linux": "pnpm build && electron-builder --linux AppImage --publish never",
+		"dist:mac": "pnpm build && electron-builder --mac dmg --publish never",
+		"dist:win": "pnpm build && electron-builder --win nsis --publish never"
 	},
 	"dependencies": {
 		"aes-js": "^3.1.2",
