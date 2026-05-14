@@ -64,14 +64,6 @@ function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolM
 	)
 }
 
-function extractionScopeLabel(scope: "all" | ToolMode) {
-	if (scope === "all") {
-		return "All"
-	}
-
-	return MODES.find(item => item.mode === scope)!.label
-}
-
 function MergeSelection({
 	groups,
 	isAnalyzing,
@@ -306,10 +298,9 @@ export type AppViewProps = {
 	isBusy: boolean
 	canRun: boolean
 	runButtonLabel: string
-	runScope: "all" | ToolMode
+	runAllModes: boolean
 	hasMultipleModeJobs: boolean
-	runScopeOptions: Array<"all" | ToolMode>
-	onRunScopeChange: (scope: "all" | ToolMode) => void
+	onRunAllModesChange: (enabled: boolean) => void
 	selectedJobCount: number
 	baseGroups: BaseSelectionGroup[]
 	optionGroups: OptionSelectionGroup[]
@@ -362,14 +353,17 @@ export function AppView(props: AppViewProps) {
 					<p>Extract APP, Option, and VHD chain contents to a local folder.</p>
 				</div>
 				<div className="actions">
-					{props.hasMultipleModeJobs && props.runScopeOptions.length > 0 && (
-						<div className="run-scope-toggle" role="group" aria-label="Extraction scope">
-							{props.runScopeOptions.map(scope => (
-								<button type="button" key={scope} className={props.runScope === scope ? "active" : ""} onClick={() => props.onRunScopeChange(scope)}>
-									{extractionScopeLabel(scope)}
-								</button>
-							))}
-						</div>
+					{props.hasMultipleModeJobs && (
+						<label className={`run-all-toggle ${props.runAllModes ? "active" : ""} ${props.isBusy ? "disabled" : ""}`}>
+							<input
+								type="checkbox"
+								checked={props.runAllModes}
+								disabled={props.isBusy}
+								onChange={event => props.onRunAllModesChange(event.currentTarget.checked)}
+							/>
+							<span className="run-all-switch" aria-hidden="true" />
+							<span>All</span>
+						</label>
 					)}
 					<button type="button" className="primary" disabled={!props.canRun} onClick={props.onRun}>
 						<Zap size={16} />

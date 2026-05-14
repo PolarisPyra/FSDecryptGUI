@@ -31,7 +31,6 @@ type RunScope = "all" | ToolMode
 export function App() {
 	const [mode, setMode] = useState<ToolMode>("container")
 	const [inputRoot, setInputRoot] = useState("")
-	const [inputFolderActive, setInputFolderActive] = useState(false)
 	const [baseFiles, setBaseFiles] = useState<PickedFile[]>([])
 	const [baseGroups, setBaseGroups] = useState<BaseSelectionGroup[]>([])
 	const [isAnalyzingBase, setIsAnalyzingBase] = useState(false)
@@ -51,6 +50,7 @@ export function App() {
 	const [result, setResult] = useState<CompletedResult | null>(null)
 	const [activeJob, setActiveJob] = useState<{ index: number; total: number; label: string } | null>(null)
 	const [history, setHistory] = useState<ExportHistoryItem[]>(readStoredHistory)
+	const [runAllModes, setRunAllModes] = useState(false)
 	const terminalRef = useRef<HTMLDivElement>(null)
 	const abortControllerRef = useRef<AbortController | null>(null)
 	const runStartedAtRef = useRef(0)
@@ -86,17 +86,7 @@ export function App() {
 	}
 	const modeScopesWithJobs = MODES.map(item => item.mode).filter(item => modeJobCounts[item] > 0)
 	const hasMultipleModeJobs = modeScopesWithJobs.length > 1
-	const runScopeOptions: RunScope[] = allJobCount > 0 && hasMultipleModeJobs ? ["all", ...modeScopesWithJobs] : []
-	const [runScope, setRunScope] = useState<RunScope>("container")
-	const firstModeWithJobs = modeScopesWithJobs[0] ?? mode
-	const effectiveRunScope =
-		runScope === "all"
-			? "all"
-			: modeJobCounts[runScope] > 0
-				? runScope
-				: inputFolderActive && allJobCount > 0
-					? "all"
-					: firstModeWithJobs
+	const effectiveRunScope: RunScope = runAllModes && hasMultipleModeJobs ? "all" : mode
 	const effectiveJobCount = effectiveRunScope === "all" ? allJobCount : modeJobCounts[effectiveRunScope]
 	const allWarnings = Object.values(modeWarningState).some(Boolean)
 	const keyValidation = useMemo(() => validateKeyFile(keyFile), [keyFile])
@@ -216,7 +206,6 @@ export function App() {
 
 	async function applyInputScan(scan: ScannedInputFolder, scanKeySource: ReadableByteSource | undefined = keySource) {
 		setInputRoot(scan.rootPath)
-		setInputFolderActive(true)
 		setBaseGroups([])
 		setOptionGroups([])
 		setMergeGroups([])
@@ -262,7 +251,7 @@ export function App() {
 			const firstDetectedMode: ToolMode =
 				nextBaseFiles.length > 0 ? "container" : scan.files.options.length > 0 ? "option" : nextMergeGroups.length > 0 ? "vhd" : mode
 			setMode(firstDetectedMode)
-			setRunScope(detectedModes > 0 ? "all" : firstDetectedMode)
+			setRunAllModes(detectedModes > 1)
 			appendLog(
 				`Input folder scanned: ${nextBaseFiles.length.toLocaleString()} base APP(s), ${scan.files.options.length.toLocaleString()} OPTION(s), ${nextMergeFiles.length.toLocaleString()} merge file(s)`
 			)
@@ -303,7 +292,6 @@ export function App() {
 		})
 		if (files.length === 0) return
 
-		setInputFolderActive(false)
 		setInputRoot("")
 		if (isOption) {
 			const nextFiles = appendPickedFiles(optionFiles, files)
@@ -388,7 +376,7 @@ export function App() {
 			setBaseGroups(nextBaseGroups)
 			setMergeGroups(nextMergeGroups)
 			setMode("vhd")
-			setRunScope("vhd")
+			setRunAllModes(false)
 			appendLog(`Moved ${group.label} to Merge`)
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not move selection to Merge: ${error.message}` : "Could not move selection to Merge")
@@ -450,7 +438,6 @@ export function App() {
 		})
 		if (files.length === 0) return
 
-		setInputFolderActive(false)
 		setInputRoot("")
 		const nextFiles = appendPickedFiles(mergeFiles, files)
 		setMergeFiles(nextFiles)
@@ -526,7 +513,6 @@ export function App() {
 
 	const reset = () => {
 		setInputRoot("")
-		setInputFolderActive(false)
 		setBaseFiles([])
 		setBaseGroups([])
 		setIsAnalyzingBase(false)
@@ -541,7 +527,7 @@ export function App() {
 		setActiveJob(null)
 		setLogs(["Ready"])
 		setResult(null)
-		setRunScope("container")
+		setRunAllModes(false)
 	}
 
 	const cancelRun = () => {
@@ -741,10 +727,9 @@ export function App() {
 			isBusy={isBusy}
 			canRun={canRun}
 			runButtonLabel={runButtonLabel}
-			runScope={effectiveRunScope}
+			runAllModes={runAllModes && hasMultipleModeJobs}
 			hasMultipleModeJobs={hasMultipleModeJobs}
-			runScopeOptions={runScopeOptions}
-			onRunScopeChange={setRunScope}
+			onRunAllModesChange={setRunAllModes}
 			selectedJobCount={effectiveJobCount}
 			baseGroups={baseGroups}
 			optionGroups={optionGroups}
@@ -767,7 +752,6 @@ export function App() {
 			terminalRef={terminalRef}
 			onModeChange={next => {
 				setMode(next)
-				setRunScope(next)
 				setResult(null)
 			}}
 			onRun={run}
