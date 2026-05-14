@@ -1,7 +1,7 @@
 {
 	"name": "fsdecrypt-gui",
 	"private": true,
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"description": "Desktop GUI for extracting fscrypt APP, option, and VHD chain contents.",
 	"author": "PolarisPyra",
 	"type": "module",
@@ -40,7 +40,7 @@
 	"build": {
 		"appId": "dev.polaris.fsdecryptgui",
 		"productName": "fsdecryptGUI",
-		"artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+		"artifactName": "${productName}.${ext}",
 		"files": [
 			"dist",
 			"dist-electron",
