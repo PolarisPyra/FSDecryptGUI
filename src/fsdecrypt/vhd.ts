@@ -62,6 +62,13 @@ type VhdLayer = {
   layout: VhdLayout;
 };
 
+export type VhdLayerInfo = {
+  name: string;
+  diskType: "fixed/base" | "dynamic/base" | "differencing/child" | `type ${number}`;
+  ownId: string;
+  parentId?: string;
+};
+
 export type VhdMergeResult = {
   outputFilename: string;
   output?: Blob;
@@ -424,16 +431,30 @@ async function findNtfsOffset(layers: VhdLayer[], virtualSize: number) {
 }
 
 function describeVhdLayer(layer: VhdLayer) {
-  const type =
-    layer.diskType === VHD_TYPE_FIXED
-      ? "fixed/base"
-      : layer.diskType === VHD_TYPE_DYNAMIC
-        ? "dynamic/base"
-        : layer.diskType === VHD_TYPE_DIFFERENCING
-          ? "differencing/child"
-          : `type ${layer.diskType}`;
+  const type = vhdLayerType(layer.diskType);
   const parent = layer.parentId ? `, parent=${layer.parentId}` : "";
   return `${layer.name} (${type}, id=${layer.ownId}${parent})`;
+}
+
+function vhdLayerType(diskType: number): VhdLayerInfo["diskType"] {
+  return diskType === VHD_TYPE_FIXED
+    ? "fixed/base"
+    : diskType === VHD_TYPE_DYNAMIC
+      ? "dynamic/base"
+      : diskType === VHD_TYPE_DIFFERENCING
+        ? "differencing/child"
+        : `type ${diskType}`;
+}
+
+export async function inspectVhdLayers(files: Array<File | ReadableByteSource>): Promise<VhdLayerInfo[]> {
+  const sources = files.map(toByteSource);
+  const layers = await Promise.all(sources.map((file) => parseVhd(file)));
+  return layers.map((layer) => ({
+    name: layer.name,
+    diskType: vhdLayerType(layer.diskType),
+    ownId: layer.ownId,
+    parentId: layer.parentId,
+  }));
 }
 
 function buildChain(layers: VhdLayer[]) {

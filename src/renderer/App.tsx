@@ -21,7 +21,7 @@ import {
 import type { ReadableByteSource } from "../fsdecrypt/byte-source"
 import type { FscryptBootId } from "../fsdecrypt/fsdecrypt"
 import type { NtfsExtractionWriter } from "../fsdecrypt/ntfs"
-import type { VhdNtfsSource } from "../fsdecrypt/vhd"
+import type { VhdLayerInfo, VhdNtfsSource } from "../fsdecrypt/vhd"
 import { PickedFile, RendererConfig, byteSourceFromPickedFile } from "./electron-api"
 
 type ToolMode = "container" | "option" | "vhd"
@@ -46,6 +46,27 @@ type OptionVhdSource = ReadableByteSource & {
 	optionSequenceNumber?: number
 }
 
+type OptionVhdLayerInfo = VhdLayerInfo & {
+	optionFilePath: string
+	optionFileName: string
+	sourceOptionName: string
+}
+
+type OptionLayerInfo = {
+	file: PickedFile
+	bootId?: FscryptBootId
+	error?: string
+	vhdLayers: OptionVhdLayerInfo[]
+}
+
+type OptionSelectionGroup = {
+	id: string
+	label: string
+	files: PickedFile[]
+	optionLayers: OptionLayerInfo[]
+	warning?: string
+}
+
 type VersionLike = {
 	major: number
 	minor: number
@@ -57,6 +78,7 @@ type AppLayerInfo = {
 	bootId?: FscryptBootId
 	error?: string
 	parentFile?: PickedFile
+	childFile?: PickedFile
 }
 
 type MergeSelectionGroup = {
@@ -66,6 +88,10 @@ type MergeSelectionGroup = {
 	appLayers: AppLayerInfo[]
 	rawVhds: PickedFile[]
 	warning?: string
+}
+
+type BaseSelectionGroup = MergeSelectionGroup & {
+	hasChildLayer: boolean
 }
 
 type ExportHistoryItem = {
@@ -140,6 +166,18 @@ function stripExtension(name: string) {
 	return name.replace(/\.[^.]+$/, "")
 }
 
+function appendPickedFiles(current: PickedFile[], picked: PickedFile[]) {
+	const merged = [...current]
+	const seen = new Set(current.map(file => file.path))
+	for (const file of picked) {
+		if (seen.has(file.path)) continue
+		seen.add(file.path)
+		merged.push(file)
+	}
+
+	return merged
+}
+
 function formatDuration(ms: number) {
 	if (ms < 60_000) {
 		return `${(ms / 1000).toFixed(1)}s`
@@ -179,6 +217,64 @@ function appLayerLabel(layer: AppLayerInfo) {
 	}
 
 	return `${layer.bootId.gameId} ${formatVersion(layer.bootId.targetVersion)}`
+}
+
+function optionLabel(layer: OptionLayerInfo) {
+	if (!layer.bootId) {
+		return stripExtension(layer.file.name)
+	}
+
+	return `${layer.bootId.gameId} ${layer.bootId.targetOption}`
+}
+
+function missingOptionParent(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+	return layer.vhdLayers.find(vhd => vhd.parentId && !allVhds.some(candidate => candidate.ownId === vhd.parentId))
+}
+
+function linkedOptionParent(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+	return layer.vhdLayers.find(vhd => vhd.parentId && allVhds.some(candidate => candidate.ownId === vhd.parentId))
+}
+
+function linkedOptionChild(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+	return layer.vhdLayers.find(vhd => allVhds.some(candidate => candidate.parentId === vhd.ownId))
+}
+
+function optionLayerClass(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+	if (layer.error || missingOptionParent(layer, allVhds)) {
+		return "chain-layer missing"
+	}
+
+	return linkedOptionParent(layer, allVhds) || linkedOptionChild(layer, allVhds) ? "chain-layer linked" : "chain-layer"
+}
+
+function optionLayerDetail(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+	if (layer.error) {
+		return layer.error
+	}
+
+	if (layer.vhdLayers.length === 0) {
+		return layer.bootId ? `No internal VHD found · ${optionLabel(layer)}` : "No internal VHD found"
+	}
+
+	const missingParent = missingOptionParent(layer, allVhds)
+	if (missingParent?.parentId) {
+		return `Child VHD · missing parent ${missingParent.parentId.slice(0, 8)}`
+	}
+
+	const linkedParent = linkedOptionParent(layer, allVhds)
+	if (linkedParent?.parentId) {
+		const parent = allVhds.find(candidate => candidate.ownId === linkedParent.parentId)
+		return `Child VHD · parent ${parent?.optionFileName ?? linkedParent.parentId.slice(0, 8)}`
+	}
+
+	const linkedChild = linkedOptionChild(layer, allVhds)
+	if (linkedChild) {
+		const child = allVhds.find(candidate => candidate.parentId === linkedChild.ownId)
+		return `Parent VHD · child ${child?.optionFileName ?? linkedChild.name}`
+	}
+
+	const firstVhd = layer.vhdLayers[0]
+	return `${firstVhd.diskType} · ${firstVhd.name}`
 }
 
 function historyId() {
@@ -292,7 +388,7 @@ function createFolderWriter(
 async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<AppLayerInfo[]> {
 	const appFiles = files.filter(file => file.name.toLowerCase().endsWith(".app"))
 	const { openFscryptSource } = await import("../fsdecrypt/fsdecrypt")
-	const layers = await Promise.all(
+	const layers: AppLayerInfo[] = await Promise.all(
 		appFiles.map(async file => {
 			try {
 				const source = await openFscryptSource(byteSourceFromPickedFile(file), { keyFile: keySource })
@@ -303,7 +399,7 @@ async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSour
 		})
 	)
 
-	return layers.map(layer => {
+	const withParents = layers.map(layer => {
 		if (!layer.bootId || layer.bootId.sequenceNumber === 0) {
 			return layer
 		}
@@ -318,6 +414,11 @@ async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSour
 
 		return { ...layer, parentFile: parent?.file }
 	})
+
+	return withParents.map(layer => ({
+		...layer,
+		childFile: withParents.find(candidate => candidate.parentFile?.path === layer.file.path)?.file
+	}))
 }
 
 async function buildMergeGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<MergeSelectionGroup[]> {
@@ -375,6 +476,191 @@ async function buildMergeGroups(files: PickedFile[], keySource: ReadableByteSour
 	}
 
 	return result
+}
+
+async function buildBaseGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<BaseSelectionGroup[]> {
+	const groups = await buildMergeGroups(files, keySource)
+	return groups.map(group => {
+		const childLayer = group.appLayers.find(layer => layer.bootId && layer.bootId.sequenceNumber > 0)
+		const missingParent = group.appLayers.find(layer => layer.bootId && layer.bootId.sequenceNumber > 0 && !layer.parentFile)
+		const warning = group.warning
+			? group.warning
+			: missingParent
+				? `${missingParent.file.name} is a child APP and its parent/base APP is not selected.`
+				: childLayer
+					? `${childLayer.file.name} is a child APP. Use Merge when extracting a parent-child APP chain.`
+					: undefined
+
+		return {
+			...group,
+			hasChildLayer: Boolean(childLayer),
+			warning
+		}
+	})
+}
+
+async function inspectOptionLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<OptionLayerInfo[]> {
+	const [{ FSCRYPT_CONTAINER_TYPE, openFscryptSource }, { extractNtfsContents }, { extractExfatContents }, { inspectVhdLayers }] = await Promise.all([
+		import("../fsdecrypt/fsdecrypt"),
+		import("../fsdecrypt/ntfs"),
+		import("../fsdecrypt/exfat"),
+		import("../fsdecrypt/vhd")
+	])
+
+	return Promise.all(
+		files.map(async file => {
+			const vhdLayers: OptionVhdLayerInfo[] = []
+
+			try {
+				const collectFromOption = async (source: ReadableByteSource) => {
+					const optionSource = await openFscryptSource(source, {
+						expectedContainerType: FSCRYPT_CONTAINER_TYPE.OPTION,
+						keyFile: keySource
+					})
+					const fileSystem = filesystemFromBootSector(await optionSource.read(0, 512))
+					if (!fileSystem) {
+						throw new Error(`${optionSource.outputFilename} is not an exFAT or NTFS image`)
+					}
+
+					const collector: NtfsExtractionWriter = {
+						createDirectory: async () => {},
+						writeFile: async (_path, childSource) => {
+							const name = childSource.name.toLowerCase()
+							if (name.endsWith(".opt")) {
+								await collectFromOption(childSource)
+								return
+							}
+							if (name.endsWith(".vhd")) {
+								const [vhdLayer] = await inspectVhdLayers([childSource])
+								vhdLayers.push({
+									...vhdLayer,
+									optionFilePath: file.path,
+									optionFileName: file.name,
+									sourceOptionName: optionSource.outputFilename
+								})
+							}
+						}
+					}
+
+					if (fileSystem === "NTFS") {
+						await extractNtfsContents(optionSource, collector)
+					} else {
+						await extractExfatContents(optionSource, collector)
+					}
+
+					return optionSource.bootId
+				}
+
+				const bootId = await collectFromOption(byteSourceFromPickedFile(file))
+				return { file, bootId, vhdLayers }
+			} catch (error) {
+				return {
+					file,
+					error: error instanceof Error ? error.message : "Could not read OPTION metadata",
+					vhdLayers
+				}
+			}
+		})
+	)
+}
+
+function connectedOptionGroups(optionLayers: OptionLayerInfo[]) {
+	const allVhds = optionLayers.flatMap(layer => layer.vhdLayers)
+	const byOwnId = new Map(allVhds.map(vhd => [vhd.ownId, vhd]))
+	const childrenByParentId = new Map<string, OptionVhdLayerInfo[]>()
+	for (const vhd of allVhds) {
+		if (!vhd.parentId) continue
+		childrenByParentId.set(vhd.parentId, [...(childrenByParentId.get(vhd.parentId) ?? []), vhd])
+	}
+
+	const visited = new Set<string>()
+	const groups: Array<{ layerPaths: Set<string>; vhdIds: Set<string> }> = []
+	for (const vhd of allVhds) {
+		if (visited.has(vhd.ownId)) continue
+		const layerPaths = new Set<string>()
+		const vhdIds = new Set<string>()
+		const queue = [vhd]
+
+		while (queue.length > 0) {
+			const current = queue.shift()!
+			if (visited.has(current.ownId)) continue
+			visited.add(current.ownId)
+			vhdIds.add(current.ownId)
+			layerPaths.add(current.optionFilePath)
+
+			if (current.parentId) {
+				const parent = byOwnId.get(current.parentId)
+				if (parent) queue.push(parent)
+			}
+			for (const child of childrenByParentId.get(current.ownId) ?? []) {
+				queue.push(child)
+			}
+		}
+
+		groups.push({ layerPaths, vhdIds })
+	}
+
+	const groupedPaths = new Set([...groups].flatMap(group => [...group.layerPaths]))
+	for (const layer of optionLayers) {
+		if (!groupedPaths.has(layer.file.path)) {
+			groups.push({ layerPaths: new Set([layer.file.path]), vhdIds: new Set() })
+		}
+	}
+
+	return groups
+}
+
+function optionChainDepth(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
+	const first = layer.vhdLayers[0]
+	if (!first) {
+		return layer.bootId?.sequenceNumber ?? 0
+	}
+
+	let depth = 0
+	let parentId = first.parentId
+	const seen = new Set<string>()
+	while (parentId && !seen.has(parentId)) {
+		seen.add(parentId)
+		const parent = allVhds.find(vhd => vhd.ownId === parentId)
+		if (!parent) break
+		depth += 1
+		parentId = parent.parentId
+	}
+
+	return depth || layer.bootId?.sequenceNumber || 0
+}
+
+async function buildOptionGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<OptionSelectionGroup[]> {
+	const optionLayers = await inspectOptionLayers(files, keySource)
+	const allVhds = optionLayers.flatMap(layer => layer.vhdLayers)
+	const groups = connectedOptionGroups(optionLayers)
+
+	return groups.map((group, index) => {
+		const layers = optionLayers
+			.filter(layer => group.layerPaths.has(layer.file.path))
+			.sort((left, right) => optionChainDepth(left, allVhds) - optionChainDepth(right, allVhds))
+		const hasErrors = layers.some(layer => layer.error)
+		const hasMissingParent = layers.some(layer => missingOptionParent(layer, allVhds))
+		const gameIds = new Set(layers.map(layer => layer.bootId?.gameId).filter(Boolean))
+		const label =
+			gameIds.size === 1
+				? `${[...gameIds][0]} ${layers.map(layer => layer.bootId?.targetOption ?? stripExtension(layer.file.name)).join(" -> ")}`
+				: layers.length === 1
+					? stripExtension(layers[0].file.name)
+					: `OPTION VHD Chain ${index + 1}`
+
+		return {
+			id: layers.map(layer => layer.file.path).join("|"),
+			label,
+			files: layers.map(layer => layer.file),
+			optionLayers: layers,
+			warning: hasErrors
+				? "Metadata read failed; extraction may still fail."
+				: hasMissingParent
+					? "A child VHD is missing its selected parent/base layer."
+					: undefined
+		}
+	})
 }
 
 function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolMode) => void }) {
@@ -444,14 +730,16 @@ function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]
 					<div className="chain-layers">
 						{group.appLayers.map(layer => (
 							<div className={layer.parentFile || layer.bootId?.sequenceNumber === 0 ? "chain-layer linked" : "chain-layer missing"} key={layer.file.path}>
-								{layer.bootId?.sequenceNumber === 0 ? <CircleDot size={14} /> : layer.parentFile ? <Link2 size={14} /> : <AlertTriangle size={14} />}
+								{layer.bootId?.sequenceNumber === 0 && !layer.childFile ? <CircleDot size={14} /> : layer.parentFile || layer.childFile ? <Link2 size={14} /> : <AlertTriangle size={14} />}
 								<div>
 									<strong title={layer.file.name}>{layer.file.name}</strong>
 									<span>
 										{layer.error
 											? layer.error
 											: layer.bootId?.sequenceNumber === 0
-												? `Parent layer · ${appLayerLabel(layer)}`
+												? layer.childFile
+													? `Parent layer · child ${layer.childFile.name}`
+													: `Parent layer · ${appLayerLabel(layer)}`
 												: layer.parentFile
 													? `Child layer · parent ${layer.parentFile.name}`
 													: `Child layer · missing parent ${formatVersion(layer.bootId!.sourceVersion)}`}
@@ -468,6 +756,56 @@ function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]
 								</div>
 							</div>
 						))}
+					</div>
+				</div>
+			))}
+		</div>
+	)
+}
+
+function OptionSelection({ groups, isAnalyzing }: { groups: OptionSelectionGroup[]; isAnalyzing: boolean }) {
+	if (isAnalyzing) {
+		return <div className="muted">Reading OPTION VHD metadata...</div>
+	}
+
+	if (groups.length === 0) {
+		return <div className="muted">None</div>
+	}
+
+	const allVhds = groups.flatMap(group => group.optionLayers.flatMap(layer => layer.vhdLayers))
+	return (
+		<div className="selected-list">
+			{groups.map((group, index) => (
+				<div className="chain-card" key={group.id || index}>
+					<div className="chain-card-header">
+						<div>
+							<label>OPTION VHD Chain</label>
+							<strong title={group.label}>{group.label}</strong>
+						</div>
+						<span>{group.files.length} update{group.files.length === 1 ? "" : "s"}</span>
+					</div>
+					{group.warning && (
+						<div className="chain-warning">
+							<AlertTriangle size={14} />
+							<span>{group.warning}</span>
+						</div>
+					)}
+					<div className="chain-layers">
+						{group.optionLayers.map(layer => {
+							const className = optionLayerClass(layer, allVhds)
+							const hasParent = Boolean(linkedOptionParent(layer, allVhds))
+							const hasChild = Boolean(linkedOptionChild(layer, allVhds))
+							const isMissing = Boolean(layer.error || missingOptionParent(layer, allVhds))
+							return (
+								<div className={className} key={layer.file.path}>
+									{isMissing ? <AlertTriangle size={14} /> : hasParent || hasChild ? <Link2 size={14} /> : <CircleDot size={14} />}
+									<div>
+										<strong title={layer.file.name}>{layer.file.name}</strong>
+										<span>{optionLayerDetail(layer, allVhds)}</span>
+									</div>
+								</div>
+							)
+						})}
 					</div>
 				</div>
 			))}
@@ -531,7 +869,11 @@ function HistoryPanel({
 export function App() {
 	const [mode, setMode] = useState<ToolMode>("container")
 	const [baseFiles, setBaseFiles] = useState<PickedFile[]>([])
+	const [baseGroups, setBaseGroups] = useState<BaseSelectionGroup[]>([])
+	const [isAnalyzingBase, setIsAnalyzingBase] = useState(false)
 	const [optionFiles, setOptionFiles] = useState<PickedFile[]>([])
+	const [optionGroups, setOptionGroups] = useState<OptionSelectionGroup[]>([])
+	const [isAnalyzingOptions, setIsAnalyzingOptions] = useState(false)
 	const [keyFile, setKeyFile] = useState<PickedFile | null>(null)
 	const [mergeFiles, setMergeFiles] = useState<PickedFile[]>([])
 	const [mergeGroups, setMergeGroups] = useState<MergeSelectionGroup[]>([])
@@ -569,7 +911,20 @@ export function App() {
 
 	const selectedContainerFiles = mode === "option" ? optionFiles : baseFiles
 	const selectedJobCount = mode === "vhd" ? mergeGroups.length : selectedContainerFiles.length
-	const canRun = !isBusy && Boolean(outputRoot) && selectedJobCount > 0 && !isAnalyzingMerge
+	const selectedWarnings =
+		mode === "vhd"
+			? mergeGroups.some(group => group.warning)
+			: mode === "option"
+				? optionGroups.some(group => group.warning)
+				: baseGroups.some(group => group.warning)
+	const canRun =
+		!isBusy &&
+		Boolean(outputRoot) &&
+		selectedJobCount > 0 &&
+		!selectedWarnings &&
+		!isAnalyzingMerge &&
+		!isAnalyzingOptions &&
+		!isAnalyzingBase
 	const modeLabel = MODES.find(m => m.mode === mode)!.label.toUpperCase()
 	const keySource = useMemo(() => (keyFile ? byteSourceFromPickedFile(keyFile) : undefined), [keyFile])
 	const configFolder = useMemo(() => dirname(configPath), [configPath])
@@ -626,10 +981,32 @@ export function App() {
 				{ name: "All files", extensions: ["*"] }
 			]
 		})
+		if (files.length === 0) return
+
 		if (isOption) {
-			setOptionFiles(files)
+			const nextFiles = appendPickedFiles(optionFiles, files)
+			setOptionFiles(nextFiles)
+			setOptionGroups([])
+			setIsAnalyzingOptions(true)
+			try {
+				setOptionGroups(await buildOptionGroups(nextFiles, keySource))
+			} catch (error) {
+				appendLog(error instanceof Error ? `Could not analyze OPTION VHD selection: ${error.message}` : "Could not analyze OPTION VHD selection")
+			} finally {
+				setIsAnalyzingOptions(false)
+			}
 		} else {
-			setBaseFiles(files)
+			const nextFiles = appendPickedFiles(baseFiles, files)
+			setBaseFiles(nextFiles)
+			setBaseGroups([])
+			setIsAnalyzingBase(true)
+			try {
+				setBaseGroups(await buildBaseGroups(nextFiles, keySource))
+			} catch (error) {
+				appendLog(error instanceof Error ? `Could not analyze APP selection: ${error.message}` : "Could not analyze APP selection")
+			} finally {
+				setIsAnalyzingBase(false)
+			}
 		}
 		setResult(null)
 	}
@@ -645,6 +1022,26 @@ export function App() {
 		if (!files[0]) return
 		setKeyFile(files[0])
 		await window.fsdecryptGUI.updateConfig({ keyFilePath: files[0].path })
+		if (baseFiles.length > 0) {
+			setIsAnalyzingBase(true)
+			try {
+				setBaseGroups(await buildBaseGroups(baseFiles, byteSourceFromPickedFile(files[0])))
+			} catch (error) {
+				appendLog(error instanceof Error ? `Could not refresh APP selection: ${error.message}` : "Could not refresh APP selection")
+			} finally {
+				setIsAnalyzingBase(false)
+			}
+		}
+		if (optionFiles.length > 0) {
+			setIsAnalyzingOptions(true)
+			try {
+				setOptionGroups(await buildOptionGroups(optionFiles, byteSourceFromPickedFile(files[0])))
+			} catch (error) {
+				appendLog(error instanceof Error ? `Could not refresh OPTION VHD selection: ${error.message}` : "Could not refresh OPTION VHD selection")
+			} finally {
+				setIsAnalyzingOptions(false)
+			}
+		}
 		if (mergeFiles.length > 0) {
 			setIsAnalyzingMerge(true)
 			try {
@@ -667,15 +1064,16 @@ export function App() {
 				{ name: "All files", extensions: ["*"] }
 			]
 		})
+		if (files.length === 0) return
 
-		setMergeFiles(files)
+		const nextFiles = appendPickedFiles(mergeFiles, files)
+		setMergeFiles(nextFiles)
 		setMergeGroups([])
 		setResult(null)
-		if (files.length === 0) return
 
 		setIsAnalyzingMerge(true)
 		try {
-			setMergeGroups(await buildMergeGroups(files, keySource))
+			setMergeGroups(await buildMergeGroups(nextFiles, keySource))
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not analyze merge selection: ${error.message}` : "Could not analyze merge selection")
 		} finally {
@@ -685,9 +1083,14 @@ export function App() {
 
 	const reset = () => {
 		setBaseFiles([])
+		setBaseGroups([])
+		setIsAnalyzingBase(false)
 		setOptionFiles([])
+		setOptionGroups([])
+		setIsAnalyzingOptions(false)
 		setMergeFiles([])
 		setMergeGroups([])
+		setIsAnalyzingMerge(false)
 		setProgress(0)
 		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
 		setActiveJob(null)
@@ -1231,7 +1634,13 @@ export function App() {
 
 					<div className="info-block selected-block">
 						<label>Selected</label>
-						{mode === "vhd" ? <MergeSelection groups={mergeGroups} isAnalyzing={isAnalyzingMerge} /> : <ContainerSelection files={selectedContainerFiles} />}
+						{mode === "vhd" ? (
+							<MergeSelection groups={mergeGroups} isAnalyzing={isAnalyzingMerge} />
+						) : mode === "option" ? (
+							<OptionSelection groups={optionGroups} isAnalyzing={isAnalyzingOptions} />
+						) : (
+							<MergeSelection groups={baseGroups} isAnalyzing={isAnalyzingBase} />
+						)}
 						<hr />
 						<label>Key</label>
 						<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>

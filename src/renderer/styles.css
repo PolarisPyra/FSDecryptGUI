@@ -347,10 +347,19 @@ hr {
 	color: #8fd7b3;
 }
 
+.chain-layer > svg {
+	color: #91a0ad;
+}
+
 .chain-layer.missing svg,
 .history-row.failed svg,
 .history-row.cancelled svg {
-	color: #f0c674;
+	color: #ff8a80;
+}
+
+.chain-layer.missing {
+	border: 1px solid rgba(255, 138, 128, 0.26);
+	background: #1b1213;
 }
 
 .file-row + .file-row {
