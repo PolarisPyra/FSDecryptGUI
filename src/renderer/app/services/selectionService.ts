@@ -12,7 +12,7 @@ import type {
 	OptionSelectionGroup,
 	OptionVhdLayerInfo,
 	VersionLike
-} from "../common/workbenchTypes"
+} from "../common/appTypes"
 
 export function appendPickedFiles(current: PickedFile[], picked: PickedFile[]) {
 	const merged = [...current]

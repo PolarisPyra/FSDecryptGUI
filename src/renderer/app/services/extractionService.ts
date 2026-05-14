@@ -5,7 +5,7 @@ import type { VhdNtfsSource } from "../../../fsdecrypt/vhd"
 import { throwIfAborted } from "../../base/common/cancellation"
 import { outputSegmentsForFolder, sanitizePathSegment, stripExtension } from "../../base/common/path"
 import { PickedFile, byteSourceFromPickedFile } from "../../electron-api"
-import type { CompletedResult, MergeSelectionGroup, OptionVhdSource, RunStats } from "../common/workbenchTypes"
+import type { CompletedResult, MergeSelectionGroup, OptionVhdSource, RunStats } from "../common/appTypes"
 import { createFolderWriter, vhdDetails } from "./extractionWriter"
 import { filesystemFromBootSector } from "./selectionService"
 

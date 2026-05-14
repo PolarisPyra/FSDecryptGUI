@@ -5,8 +5,8 @@ import { isAbortError } from "./base/common/cancellation"
 import { formatDuration, formatLogExport, logExportName } from "./base/common/format"
 import { dirname, pathInFolder, stripExtension } from "./base/common/path"
 import { PickedFile, RendererConfig, byteSourceFromPickedFile } from "./electron-api"
-import { WorkbenchView } from "./workbench/browser/workbenchView"
-import { MODES } from "./workbench/common/modes"
+import { AppView } from "./app/browser/appView"
+import { MODES } from "./app/common/modes"
 import type {
 	BaseSelectionGroup,
 	CompletedResult,
@@ -15,16 +15,16 @@ import type {
 	OptionSelectionGroup,
 	RunStats,
 	ToolMode
-} from "./workbench/common/workbenchTypes"
-import { runBaseExport, runMergeExport, runOptionExport } from "./workbench/services/extractionService"
-import { historyId, readStoredHistory, writeStoredHistory } from "./workbench/services/historyStorage"
+} from "./app/common/appTypes"
+import { runBaseExport, runMergeExport, runOptionExport } from "./app/services/extractionService"
+import { historyId, readStoredHistory, writeStoredHistory } from "./app/services/historyStorage"
 import {
 	appendPickedFiles,
 	buildBaseGroups,
 	buildMergeGroups,
 	buildOptionGroups,
 	validateKeyFile
-} from "./workbench/services/selectionService"
+} from "./app/services/selectionService"
 
 export function App() {
 	const [mode, setMode] = useState<ToolMode>("container")
@@ -558,7 +558,7 @@ export function App() {
 	}
 
 	return (
-		<WorkbenchView
+		<AppView
 			mode={mode}
 			modeLabel={modeLabel}
 			isBusy={isBusy}

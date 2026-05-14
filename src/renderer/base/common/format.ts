@@ -1,4 +1,4 @@
-import type { RunStats, VersionLike } from "../../workbench/common/workbenchTypes"
+import type { RunStats, VersionLike } from "../../app/common/appTypes"
 
 export function formatBytes(bytes: number) {
 	const units = ["B", "KB", "MB", "GB", "TB"]

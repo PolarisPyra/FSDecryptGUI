@@ -1,6 +1,6 @@
 import { FileArchive, FileKey, HardDriveDownload } from "lucide-react"
 
-import type { ToolMode } from "./workbenchTypes"
+import type { ToolMode } from "./appTypes"
 
 export const MODES: Array<{ mode: ToolMode; label: string; icon: typeof FileArchive }> = [
 	{ mode: "container", label: "Base", icon: FileArchive },

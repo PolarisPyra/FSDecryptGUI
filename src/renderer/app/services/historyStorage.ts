@@ -1,4 +1,4 @@
-import type { ExportHistoryItem } from "../common/workbenchTypes"
+import type { ExportHistoryItem } from "../common/appTypes"
 
 const HISTORY_STORAGE_KEY = "fsdecryptGUI.exportHistory"
 

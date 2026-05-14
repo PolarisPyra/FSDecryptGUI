@@ -34,7 +34,7 @@ import type {
 	OptionSelectionGroup,
 	RunStats,
 	ToolMode
-} from "../common/workbenchTypes"
+} from "../common/appTypes"
 import {
 	appLayerLabel,
 	linkedOptionChild,
@@ -270,7 +270,7 @@ function HistoryPanel({
 	)
 }
 
-export type WorkbenchViewProps = {
+export type AppViewProps = {
 	mode: ToolMode
 	modeLabel: string
 	isBusy: boolean
@@ -315,7 +315,7 @@ export type WorkbenchViewProps = {
 	onSaveLogs: () => void
 }
 
-export function WorkbenchView(props: WorkbenchViewProps) {
+export function AppView(props: AppViewProps) {
 	return (
 		<div className="app-shell">
 			<header className="titlebar">

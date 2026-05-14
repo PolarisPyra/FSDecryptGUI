@@ -51,6 +51,64 @@ the Actions tab for the current `package.json` version.
   - macOS: `~/Library/Application Support/fsdecryptGUI/config.yaml`
   - Windows: `%APPDATA%\\fsdecryptGUI\\config.yaml`
 
+## Developer structure
+
+The renderer is split by responsibility. Keep code in the lowest layer that can
+own it:
+
+- `src/renderer/base/common/` contains framework-independent utilities. Put
+  generic formatting, path, and cancellation helpers here.
+- `src/renderer/app/common/` contains app-level types and constants shared
+  by the app. Put mode definitions and shared model types here.
+- `src/renderer/app/browser/` contains React/browser view composition.
+  Components in this folder should render state and call props; avoid putting
+  extraction, filesystem, or selection-analysis workflows here.
+- `src/renderer/app/services/` contains renderer-side application
+  services. Put local storage, selection analysis, extraction orchestration,
+  progress writers, and IPC-facing workflows here.
+- `src/renderer/App.tsx` is the app controller. It owns high-level state,
+  connects services to the view, and should stay small enough to scan quickly.
+- `src/renderer/electron-api.ts` is the typed preload API boundary. Renderer
+  code should call Electron through this file instead of reaching for globals
+  directly.
+
+Electron main-process code lives in `src/electron/`:
+
+- `main.ts` owns windows, menus, dialogs, notifications, safe output-path
+  handling, and IPC handlers.
+- `preload.cjs` exposes the minimal IPC bridge to the renderer.
+- `config.ts` owns `config.yaml` loading, writing, and conversion into renderer
+  config.
+
+Core decrypt and filesystem parsing code lives in `src/fsdecrypt/`. Keep it UI
+agnostic: it should work from byte sources, report progress through callbacks,
+and avoid Electron or React imports.
+
+### Important workflows
+
+- Selection metadata is built in
+  `src/renderer/app/services/selectionService.ts`. Use this for APP,
+  OPTION, and VHD chain grouping and warnings.
+- Exports are run through
+  `src/renderer/app/services/extractionService.ts`. Batch completion
+  notifications are emitted after the full batch finishes, not after each job.
+- File writing and progress accounting are handled by
+  `src/renderer/app/services/extractionWriter.ts`, which writes through
+  Electron IPC so the renderer never writes to disk directly.
+- Export history is persisted in
+  `src/renderer/app/services/historyStorage.ts`.
+
+### Change guidelines
+
+- Keep React components mostly presentational. Pass callbacks in from
+  `App.tsx`; move non-trivial behavior into services.
+- Keep shared types in `app/common/appTypes.ts`; do not duplicate
+  shape definitions across browser and service files.
+- Keep generic helpers out of services. If a helper has no app state and no
+  Electron dependency, it probably belongs in `base/common/`.
+- Validate with `pnpm typecheck` and `pnpm build` after renderer changes.
+- Validate packaging-affecting changes with `pnpm dist:linux` on Linux.
+
 ## Troubleshooting
 
 ### `Electron failed to install correctly`
