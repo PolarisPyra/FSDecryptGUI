@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron")
 
 const api = {
 	pickFiles: options => ipcRenderer.invoke("dialog:pickFiles", options),
+	selectInputFolder: () => ipcRenderer.invoke("dialog:selectInputFolder"),
 	selectOutputFolder: () => ipcRenderer.invoke("dialog:selectOutputFolder"),
 	readConfig: () => ipcRenderer.invoke("config:read"),
 	updateConfig: patch => ipcRenderer.invoke("config:update", patch),
@@ -14,6 +15,12 @@ const api = {
 		ipcRenderer.on("config:changed", listener)
 		return () => ipcRenderer.removeListener("config:changed", listener)
 	},
+	onInputFolderScanned: callback => {
+		const listener = (_event, scan) => callback(scan)
+		ipcRenderer.on("inputFolder:scanned", listener)
+		return () => ipcRenderer.removeListener("inputFolder:scanned", listener)
+	},
+	scanInputFolder: rootPath => ipcRenderer.invoke("fs:scanInputFolder", rootPath),
 	readRange: (filePath, offset, length) => ipcRenderer.invoke("fs:readRange", filePath, offset, length),
 	decryptFscryptRange: request => ipcRenderer.invoke("fs:decryptFscryptRange", request),
 	ensureDirectory: (rootPath, segments) => ipcRenderer.invoke("fs:ensureDirectory", rootPath, segments),

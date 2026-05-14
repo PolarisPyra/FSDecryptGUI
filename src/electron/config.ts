@@ -11,6 +11,7 @@ export type PickedFile = {
 
 type StoredConfig = {
 	version?: number
+	inputRoot?: string
 	outputRoot?: string
 	keys?: {
 		selectedKeyFile?: string
@@ -19,11 +20,13 @@ type StoredConfig = {
 
 export type RendererConfig = {
 	configPath: string
+	inputRoot?: string
 	outputRoot?: string
 	keyFile?: PickedFile
 }
 
 export type ConfigPatch = {
+	inputRoot?: string | null
 	outputRoot?: string | null
 	keyFilePath?: string | null
 }
@@ -68,6 +71,7 @@ async function writeStoredConfig(config: StoredConfig) {
 		target,
 		YAML.stringify({
 			version: 1,
+			inputRoot: config.inputRoot ?? undefined,
 			outputRoot: config.outputRoot ?? undefined,
 			keys: {
 				selectedKeyFile: config.keys?.selectedKeyFile ?? undefined
@@ -83,6 +87,7 @@ export async function readRendererConfig(): Promise<RendererConfig> {
 
 	return {
 		configPath: configPath(),
+		inputRoot: stored.inputRoot,
 		outputRoot: stored.outputRoot,
 		keyFile
 	}
@@ -93,6 +98,10 @@ export async function updateConfig(patch: ConfigPatch): Promise<RendererConfig> 
 
 	if ("outputRoot" in patch) {
 		stored.outputRoot = patch.outputRoot ?? undefined
+	}
+
+	if ("inputRoot" in patch) {
+		stored.inputRoot = patch.inputRoot ?? undefined
 	}
 
 	if ("keyFilePath" in patch) {

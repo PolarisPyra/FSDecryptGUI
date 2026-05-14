@@ -2,6 +2,7 @@ import type { RefObject } from "react"
 
 import {
 	AlertTriangle,
+	ArrowRightLeft,
 	CheckCircle2,
 	CircleDot,
 	Clipboard,
@@ -48,8 +49,8 @@ import {
 function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolMode) => void }) {
 	const activeIndex = MODES.findIndex(item => item.mode === mode)
 	return (
-		<div className="mode-toggle">
-			<div className="mode-indicator" style={{ transform: `translateX(calc(${activeIndex} * (100% + 0.2rem)))` }} />
+		<div className="mode-toggle" style={{ "--active-index": activeIndex } as React.CSSProperties}>
+			<div className="mode-indicator" />
 			{MODES.map(item => {
 				const Icon = item.icon
 				return (
@@ -63,14 +64,24 @@ function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolM
 	)
 }
 
+function extractionScopeLabel(scope: "all" | ToolMode) {
+	if (scope === "all") {
+		return "All"
+	}
+
+	return MODES.find(item => item.mode === scope)!.label
+}
+
 function MergeSelection({
 	groups,
 	isAnalyzing,
-	onRemoveFile
+	onRemoveFile,
+	onMoveToMerge
 }: {
-	groups: MergeSelectionGroup[]
+	groups: Array<MergeSelectionGroup | BaseSelectionGroup>
 	isAnalyzing: boolean
 	onRemoveFile: (path: string) => void
+	onMoveToMerge?: (group: BaseSelectionGroup) => void
 }) {
 	if (isAnalyzing) {
 		return <div className="muted">Reading APP chain metadata...</div>
@@ -102,6 +113,12 @@ function MergeSelection({
 							<Info size={14} />
 							<span>{group.notice}</span>
 						</div>
+					)}
+					{onMoveToMerge && (("hasChildLayer" in group && group.hasChildLayer) || group.rawVhds.length > 0) && (
+						<button type="button" className="move-selection-button" onClick={() => onMoveToMerge(group as BaseSelectionGroup)}>
+							<ArrowRightLeft size={14} />
+							Move to Merge
+						</button>
 					)}
 					<div className="chain-layers">
 						{group.appLayers.map(layer => (
@@ -288,6 +305,11 @@ export type AppViewProps = {
 	modeLabel: string
 	isBusy: boolean
 	canRun: boolean
+	runButtonLabel: string
+	runScope: "all" | ToolMode
+	hasMultipleModeJobs: boolean
+	runScopeOptions: Array<"all" | ToolMode>
+	onRunScopeChange: (scope: "all" | ToolMode) => void
 	selectedJobCount: number
 	baseGroups: BaseSelectionGroup[]
 	optionGroups: OptionSelectionGroup[]
@@ -298,6 +320,7 @@ export type AppViewProps = {
 	keyFile: PickedFile | null
 	keyValidation: KeyValidation
 	outputRoot: string
+	inputRoot: string
 	configPath: string
 	configFolder: string
 	history: ExportHistoryItem[]
@@ -314,10 +337,12 @@ export type AppViewProps = {
 	onChooseApps: () => void
 	onChooseContainer: () => void
 	onChooseKey: () => void
+	onSelectInputFolder: () => void
 	onClearKey: () => void
 	onRemoveBaseFile: (path: string) => void
 	onRemoveOptionFile: (path: string) => void
 	onRemoveMergeFile: (path: string) => void
+	onMoveBaseGroupToMerge: (group: BaseSelectionGroup) => void
 	onSelectOutputFolder: () => void
 	onOpenOutputRootFolder: () => void
 	onOpenConfigFolder: () => void
@@ -337,9 +362,18 @@ export function AppView(props: AppViewProps) {
 					<p>Extract APP, Option, and VHD chain contents to a local folder.</p>
 				</div>
 				<div className="actions">
+					{props.hasMultipleModeJobs && props.runScopeOptions.length > 0 && (
+						<div className="run-scope-toggle" role="group" aria-label="Extraction scope">
+							{props.runScopeOptions.map(scope => (
+								<button type="button" key={scope} className={props.runScope === scope ? "active" : ""} onClick={() => props.onRunScopeChange(scope)}>
+									{extractionScopeLabel(scope)}
+								</button>
+							))}
+						</div>
+					)}
 					<button type="button" className="primary" disabled={!props.canRun} onClick={props.onRun}>
 						<Zap size={16} />
-						Extract {props.selectedJobCount > 1 ? props.selectedJobCount : ""}
+						{props.runButtonLabel}
 					</button>
 					{props.isBusy ? (
 						<button type="button" onClick={props.onCancelRun}>
@@ -382,7 +416,12 @@ export function AppView(props: AppViewProps) {
 						) : props.mode === "option" ? (
 							<OptionSelection groups={props.optionGroups} isAnalyzing={props.isAnalyzingOptions} onRemoveFile={props.onRemoveOptionFile} />
 						) : (
-							<MergeSelection groups={props.baseGroups} isAnalyzing={props.isAnalyzingBase} onRemoveFile={props.onRemoveBaseFile} />
+							<MergeSelection
+								groups={props.baseGroups}
+								isAnalyzing={props.isAnalyzingBase}
+								onRemoveFile={props.onRemoveBaseFile}
+								onMoveToMerge={props.onMoveBaseGroupToMerge}
+							/>
 						)}
 						<hr />
 						<label>Key</label>
@@ -400,6 +439,23 @@ export function AppView(props: AppViewProps) {
 									<X size={15} />
 								</button>
 							)}
+						</div>
+						<hr />
+						<label>Input Folder</label>
+						<div className="path-action-row">
+							<strong className="truncate" title={props.inputRoot || "Select a folder containing APP, OPT, and VHD files"}>
+								{props.inputRoot ? basename(props.inputRoot) : "Select Input Folder"}
+							</strong>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={props.isBusy}
+								title="Select input folder"
+								aria-label="Select input folder"
+								onClick={props.onSelectInputFolder}
+							>
+								<FolderPlus size={16} />
+							</button>
 						</div>
 						<hr />
 						<label>Output Folder</label>

@@ -4,7 +4,7 @@ import type { ReadableByteSource } from "../fsdecrypt/byte-source"
 import { isAbortError } from "./base/common/cancellation"
 import { formatDuration, formatLogExport, logExportName } from "./base/common/format"
 import { dirname, pathInFolder, stripExtension } from "./base/common/path"
-import { PickedFile, RendererConfig, byteSourceFromPickedFile } from "./electron-api"
+import { PickedFile, RendererConfig, ScannedInputFolder, byteSourceFromPickedFile } from "./electron-api"
 import { AppView } from "./app/browser/appView"
 import { MODES } from "./app/common/modes"
 import type {
@@ -26,8 +26,12 @@ import {
 	validateKeyFile
 } from "./app/services/selectionService"
 
+type RunScope = "all" | ToolMode
+
 export function App() {
 	const [mode, setMode] = useState<ToolMode>("container")
+	const [inputRoot, setInputRoot] = useState("")
+	const [inputFolderActive, setInputFolderActive] = useState(false)
 	const [baseFiles, setBaseFiles] = useState<PickedFile[]>([])
 	const [baseGroups, setBaseGroups] = useState<BaseSelectionGroup[]>([])
 	const [isAnalyzingBase, setIsAnalyzingBase] = useState(false)
@@ -69,27 +73,50 @@ export function App() {
 		return () => window.clearInterval(interval)
 	}, [isBusy])
 
-	const selectedContainerFiles = mode === "option" ? optionFiles : baseFiles
-	const selectedJobCount = mode === "vhd" ? mergeGroups.length : selectedContainerFiles.length
-	const selectedWarnings =
-		mode === "vhd"
-			? mergeGroups.some(group => group.warning)
-			: mode === "option"
-				? optionGroups.some(group => group.warning)
-				: baseGroups.some(group => group.warning)
+	const allJobCount = baseFiles.length + optionFiles.length + mergeGroups.length
+	const modeJobCounts: Record<ToolMode, number> = {
+		container: baseFiles.length,
+		option: optionFiles.length,
+		vhd: mergeGroups.length
+	}
+	const modeWarningState: Record<ToolMode, boolean> = {
+		container: baseGroups.some(group => group.warning),
+		option: optionGroups.some(group => group.warning),
+		vhd: mergeGroups.some(group => group.warning)
+	}
+	const modeScopesWithJobs = MODES.map(item => item.mode).filter(item => modeJobCounts[item] > 0)
+	const hasMultipleModeJobs = modeScopesWithJobs.length > 1
+	const runScopeOptions: RunScope[] = allJobCount > 0 && hasMultipleModeJobs ? ["all", ...modeScopesWithJobs] : []
+	const [runScope, setRunScope] = useState<RunScope>("container")
+	const firstModeWithJobs = modeScopesWithJobs[0] ?? mode
+	const effectiveRunScope =
+		runScope === "all"
+			? "all"
+			: modeJobCounts[runScope] > 0
+				? runScope
+				: inputFolderActive && allJobCount > 0
+					? "all"
+					: firstModeWithJobs
+	const effectiveJobCount = effectiveRunScope === "all" ? allJobCount : modeJobCounts[effectiveRunScope]
+	const allWarnings = Object.values(modeWarningState).some(Boolean)
 	const keyValidation = useMemo(() => validateKeyFile(keyFile), [keyFile])
 	const canRun =
 		!isBusy &&
 		Boolean(outputRoot) &&
-		selectedJobCount > 0 &&
-		!selectedWarnings &&
+		effectiveJobCount > 0 &&
+		!(effectiveRunScope === "all" ? allWarnings : modeWarningState[effectiveRunScope]) &&
 		keyValidation.status !== "invalid" &&
 		!isAnalyzingMerge &&
 		!isAnalyzingOptions &&
 		!isAnalyzingBase
 	const modeLabel = MODES.find(item => item.mode === mode)!.label.toUpperCase()
+	const effectiveScopeLabel = effectiveRunScope === "all" ? "ALL" : MODES.find(item => item.mode === effectiveRunScope)!.label.toUpperCase()
 	const keySource = useMemo(() => (keyFile ? byteSourceFromPickedFile(keyFile) : undefined), [keyFile])
 	const configFolder = useMemo(() => dirname(configPath), [configPath])
+	const runButtonLabel =
+		effectiveRunScope === "all"
+			? `Extract All${effectiveJobCount > 1 ? ` ${effectiveJobCount}` : ""}`
+			: `Extract ${effectiveScopeLabel}${effectiveJobCount > 1 ? ` ${effectiveJobCount}` : ""}`
 
 	const appendLog = (message: string) => {
 		const timestamp = new Date().toLocaleTimeString()
@@ -143,24 +170,124 @@ export function App() {
 	}
 
 	useEffect(() => {
+		let cancelled = false
 		const applyConfig = (config: RendererConfig) => {
+			setInputRoot(config.inputRoot ?? "")
 			setOutputRoot(config.outputRoot ?? "")
 			setKeyFile(config.keyFile ?? null)
 			setConfigPath(config.configPath)
 		}
 
+		const scanConfiguredInput = async (config: RendererConfig) => {
+			if (!config.inputRoot) return
+
+			try {
+				const scan = await window.fsdecryptGUI.scanInputFolder(config.inputRoot)
+				if (cancelled) return
+				await applyInputScan(scan, config.keyFile ? byteSourceFromPickedFile(config.keyFile) : undefined)
+			} catch (error) {
+				if (!cancelled) {
+					appendLog(error instanceof Error ? `Could not scan configured input folder: ${error.message}` : "Could not scan configured input folder")
+				}
+			}
+		}
+
 		window.fsdecryptGUI
 			.readConfig()
-			.then(applyConfig)
+			.then(config => {
+				if (cancelled) return
+				applyConfig(config)
+				void scanConfiguredInput(config)
+			})
 			.catch(error => {
 				appendLog(error instanceof Error ? `Could not read config: ${error.message}` : "Could not read config")
 			})
 
-		return window.fsdecryptGUI.onConfigChanged(config => {
+		const removeConfigListener = window.fsdecryptGUI.onConfigChanged(config => {
 			applyConfig(config)
-			appendLog(config.outputRoot ? `Output root selected: ${config.outputRoot}` : "Output root cleared")
+			appendLog("Configuration updated")
 		})
+
+		return () => {
+			cancelled = true
+			removeConfigListener()
+		}
 	}, [])
+
+	async function applyInputScan(scan: ScannedInputFolder, scanKeySource: ReadableByteSource | undefined = keySource) {
+		setInputRoot(scan.rootPath)
+		setInputFolderActive(true)
+		setBaseGroups([])
+		setOptionGroups([])
+		setMergeGroups([])
+		setResult(null)
+
+		setIsAnalyzingBase(true)
+		setIsAnalyzingOptions(true)
+		setIsAnalyzingMerge(true)
+		try {
+			const appGroups = await buildBaseGroups(scan.files.apps, scanKeySource)
+			const basePaths = new Set<string>()
+			const mergePaths = new Set(scan.files.vhds.map(file => file.path))
+			for (const group of appGroups) {
+				const target = group.hasChildLayer || group.rawVhds.length > 0 ? mergePaths : basePaths
+				for (const file of group.files) {
+					target.add(file.path)
+				}
+			}
+
+			const allAppFilesByPath = new Map(scan.files.apps.map(file => [file.path, file]))
+			const nextBaseFiles = [...basePaths].map(path => allAppFilesByPath.get(path)).filter((file): file is PickedFile => Boolean(file))
+			const nextMergeFiles = [
+				...scan.files.apps.filter(file => mergePaths.has(file.path)),
+				...scan.files.vhds
+			]
+			setBaseFiles(nextBaseFiles)
+			setOptionFiles(scan.files.options)
+			setMergeFiles(nextMergeFiles)
+
+			const [nextBaseGroups, nextOptionGroups, nextMergeGroups] = await Promise.all([
+				buildBaseGroups(nextBaseFiles, scanKeySource),
+				buildOptionGroups(scan.files.options, scanKeySource),
+				buildMergeGroups(nextMergeFiles, scanKeySource)
+			])
+			setBaseGroups(nextBaseGroups)
+			setOptionGroups(nextOptionGroups)
+			setMergeGroups(nextMergeGroups)
+			const detectedModes = [
+				nextBaseFiles.length > 0,
+				scan.files.options.length > 0,
+				nextMergeGroups.length > 0
+			].filter(Boolean).length
+			const firstDetectedMode: ToolMode =
+				nextBaseFiles.length > 0 ? "container" : scan.files.options.length > 0 ? "option" : nextMergeGroups.length > 0 ? "vhd" : mode
+			setMode(firstDetectedMode)
+			setRunScope(detectedModes > 0 ? "all" : firstDetectedMode)
+			appendLog(
+				`Input folder scanned: ${nextBaseFiles.length.toLocaleString()} base APP(s), ${scan.files.options.length.toLocaleString()} OPTION(s), ${nextMergeFiles.length.toLocaleString()} merge file(s)`
+			)
+		} finally {
+			setIsAnalyzingBase(false)
+			setIsAnalyzingOptions(false)
+			setIsAnalyzingMerge(false)
+		}
+	}
+
+	const selectInputFolder = async () => {
+		try {
+			const scan = await window.fsdecryptGUI.selectInputFolder()
+			if (!scan) return
+			await applyInputScan(scan)
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not scan input folder: ${error.message}` : "Could not scan input folder")
+		}
+	}
+
+	useEffect(() => {
+		return window.fsdecryptGUI.onInputFolderScanned(scan => {
+			void applyInputScan(scan)
+		})
+	}, [keySource])
 
 	const chooseContainer = async () => {
 		const isOption = mode === "option"
@@ -176,6 +303,8 @@ export function App() {
 		})
 		if (files.length === 0) return
 
+		setInputFolderActive(false)
+		setInputRoot("")
 		if (isOption) {
 			const nextFiles = appendPickedFiles(optionFiles, files)
 			setOptionFiles(nextFiles)
@@ -237,6 +366,38 @@ export function App() {
 		}
 	}
 
+	const moveBaseGroupToMerge = async (group: BaseSelectionGroup) => {
+		if (isBusy) return
+
+		const movingPaths = new Set(group.files.map(file => file.path))
+		const nextBaseFiles = baseFiles.filter(file => !movingPaths.has(file.path))
+		const nextMergeFiles = appendPickedFiles(mergeFiles, group.files)
+		setBaseFiles(nextBaseFiles)
+		setMergeFiles(nextMergeFiles)
+		setBaseGroups([])
+		setMergeGroups([])
+		setResult(null)
+
+		setIsAnalyzingBase(true)
+		setIsAnalyzingMerge(true)
+		try {
+			const [nextBaseGroups, nextMergeGroups] = await Promise.all([
+				buildBaseGroups(nextBaseFiles, keySource),
+				buildMergeGroups(nextMergeFiles, keySource)
+			])
+			setBaseGroups(nextBaseGroups)
+			setMergeGroups(nextMergeGroups)
+			setMode("vhd")
+			setRunScope("vhd")
+			appendLog(`Moved ${group.label} to Merge`)
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not move selection to Merge: ${error.message}` : "Could not move selection to Merge")
+		} finally {
+			setIsAnalyzingBase(false)
+			setIsAnalyzingMerge(false)
+		}
+	}
+
 	const chooseKey = async () => {
 		const files = await window.fsdecryptGUI.pickFiles({
 			title: "Choose key file",
@@ -289,6 +450,8 @@ export function App() {
 		})
 		if (files.length === 0) return
 
+		setInputFolderActive(false)
+		setInputRoot("")
 		const nextFiles = appendPickedFiles(mergeFiles, files)
 		setMergeFiles(nextFiles)
 		setMergeGroups([])
@@ -362,6 +525,8 @@ export function App() {
 	}
 
 	const reset = () => {
+		setInputRoot("")
+		setInputFolderActive(false)
 		setBaseFiles([])
 		setBaseGroups([])
 		setIsAnalyzingBase(false)
@@ -376,6 +541,7 @@ export function App() {
 		setActiveJob(null)
 		setLogs(["Ready"])
 		setResult(null)
+		setRunScope("container")
 	}
 
 	const cancelRun = () => {
@@ -463,24 +629,35 @@ export function App() {
 			setRunStats
 		}
 
+		const baseJobs = baseFiles.map(file => ({
+			mode: "container" as ToolMode,
+			label: stripExtension(file.name),
+			sources: [file.name],
+			run: () => runBaseExport(extractionContext, file, elapsedDetails, abortController.signal, noteBytesWritten)
+		}))
+		const optionJobs = optionFiles.map(file => ({
+			mode: "option" as ToolMode,
+			label: stripExtension(file.name),
+			sources: [file.name],
+			run: () => runOptionExport(extractionContext, file, elapsedDetails, abortController.signal, noteBytesWritten)
+		}))
+		const mergeJobs = mergeGroups.map(group => ({
+			mode: "vhd" as ToolMode,
+			label: group.label,
+			sources: group.files.map(file => file.name),
+			run: () => runMergeExport(extractionContext, group, elapsedDetails, abortController.signal, noteBytesWritten)
+		}))
 		const jobs =
-			mode === "vhd"
-				? mergeGroups.map(group => ({
-						label: group.label,
-						sources: group.files.map(file => file.name),
-						run: () => runMergeExport(extractionContext, group, elapsedDetails, abortController.signal, noteBytesWritten)
-					}))
-				: selectedContainerFiles.map(file => ({
-						label: stripExtension(file.name),
-						sources: [file.name],
-						run: () =>
-							mode === "option"
-								? runOptionExport(extractionContext, file, elapsedDetails, abortController.signal, noteBytesWritten)
-								: runBaseExport(extractionContext, file, elapsedDetails, abortController.signal, noteBytesWritten)
-					}))
+			effectiveRunScope === "all"
+				? [...baseJobs, ...optionJobs, ...mergeJobs]
+				: effectiveRunScope === "vhd"
+					? mergeJobs
+					: effectiveRunScope === "option"
+						? optionJobs
+						: baseJobs
 
 		try {
-			appendLog(`Starting ${modeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
+			appendLog(`Starting ${effectiveScopeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
 			let successfulJobs = 0
 			let failedJobs = 0
 
@@ -497,7 +674,7 @@ export function App() {
 					setProgress(100)
 					addHistory({
 						status: "success",
-						mode,
+						mode: job.mode,
 						label: job.label,
 						sources: job.sources,
 						outputFolder: nextResult.outputFolder,
@@ -511,7 +688,7 @@ export function App() {
 					if (isAbortError(error)) {
 						addHistory({
 							status: "cancelled",
-							mode,
+							mode: job.mode,
 							label: job.label,
 							sources: job.sources,
 							durationMs: performance.now() - jobStartedAt,
@@ -525,7 +702,7 @@ export function App() {
 					failedJobs += 1
 					addHistory({
 						status: "failed",
-						mode,
+						mode: job.mode,
 						label: job.label,
 						sources: job.sources,
 						durationMs: performance.now() - jobStartedAt,
@@ -563,7 +740,12 @@ export function App() {
 			modeLabel={modeLabel}
 			isBusy={isBusy}
 			canRun={canRun}
-			selectedJobCount={selectedJobCount}
+			runButtonLabel={runButtonLabel}
+			runScope={effectiveRunScope}
+			hasMultipleModeJobs={hasMultipleModeJobs}
+			runScopeOptions={runScopeOptions}
+			onRunScopeChange={setRunScope}
+			selectedJobCount={effectiveJobCount}
 			baseGroups={baseGroups}
 			optionGroups={optionGroups}
 			mergeGroups={mergeGroups}
@@ -573,6 +755,7 @@ export function App() {
 			keyFile={keyFile}
 			keyValidation={keyValidation}
 			outputRoot={outputRoot}
+			inputRoot={inputRoot}
 			configPath={configPath}
 			configFolder={configFolder}
 			history={history}
@@ -584,6 +767,7 @@ export function App() {
 			terminalRef={terminalRef}
 			onModeChange={next => {
 				setMode(next)
+				setRunScope(next)
 				setResult(null)
 			}}
 			onRun={run}
@@ -592,10 +776,12 @@ export function App() {
 			onChooseApps={chooseApps}
 			onChooseContainer={chooseContainer}
 			onChooseKey={chooseKey}
+			onSelectInputFolder={selectInputFolder}
 			onClearKey={clearKey}
 			onRemoveBaseFile={removeBaseFile}
 			onRemoveOptionFile={removeOptionFile}
 			onRemoveMergeFile={removeMergeFile}
+			onMoveBaseGroupToMerge={moveBaseGroupToMerge}
 			onSelectOutputFolder={selectOutputFolder}
 			onOpenOutputRootFolder={openOutputRootFolder}
 			onOpenConfigFolder={openConfigFolder}

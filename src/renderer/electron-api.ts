@@ -6,12 +6,22 @@ export type PickedFile = {
 	size: number
 }
 
+export type ScannedInputFolder = {
+	rootPath: string
+	files: {
+		apps: PickedFile[]
+		options: PickedFile[]
+		vhds: PickedFile[]
+	}
+}
+
 export type ElectronApi = {
 	pickFiles: (options: {
 		title: string
 		filters?: Array<{ name: string; extensions: string[] }>
 		multiple?: boolean
 	}) => Promise<PickedFile[]>
+	selectInputFolder: () => Promise<ScannedInputFolder | undefined>
 	selectOutputFolder: () => Promise<string | undefined>
 	readConfig: () => Promise<RendererConfig>
 	updateConfig: (patch: ConfigPatch) => Promise<RendererConfig>
@@ -20,6 +30,8 @@ export type ElectronApi = {
 	saveText: (request: SaveTextRequest) => Promise<string | undefined>
 	notify: (request: NotifyRequest) => Promise<void>
 	onConfigChanged: (callback: (config: RendererConfig) => void) => () => void
+	onInputFolderScanned: (callback: (scan: ScannedInputFolder) => void) => () => void
+	scanInputFolder: (rootPath: string) => Promise<ScannedInputFolder>
 	readRange: (filePath: string, offset: number, length: number) => Promise<ArrayBuffer>
 	decryptFscryptRange: (request: DecryptFscryptRangeRequest) => Promise<ArrayBuffer>
 	ensureDirectory: (rootPath: string, segments: string[]) => Promise<void>
@@ -32,11 +44,13 @@ export type ElectronApi = {
 
 export type RendererConfig = {
 	configPath: string
+	inputRoot?: string
 	outputRoot?: string
 	keyFile?: PickedFile
 }
 
 export type ConfigPatch = {
+	inputRoot?: string | null
 	outputRoot?: string | null
 	keyFilePath?: string | null
 }

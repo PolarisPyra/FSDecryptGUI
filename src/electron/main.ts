@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, shell } from "electron"
 import { createDecipheriv } from "node:crypto"
-import { mkdir, open, rm, stat, writeFile, type FileHandle } from "node:fs/promises"
+import { mkdir, open, readdir, rm, stat, writeFile, type FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -10,6 +10,15 @@ type PickFileOptions = {
 	title: string
 	filters?: Electron.FileFilter[]
 	multiple?: boolean
+}
+
+type ScannedInputFolder = {
+	rootPath: string
+	files: {
+		apps: Array<{ path: string; name: string; size: number }>
+		options: Array<{ path: string; name: string; size: number }>
+		vhds: Array<{ path: string; name: string; size: number }>
+	}
 }
 
 type WriteFileRequest = {
@@ -237,11 +246,88 @@ async function chooseOutputFolder(window: BrowserWindow) {
 	return config.outputRoot
 }
 
+async function scanInputFolder(rootPath: string): Promise<ScannedInputFolder> {
+	const root = path.resolve(rootPath)
+	const files: ScannedInputFolder["files"] = {
+		apps: [],
+		options: [],
+		vhds: []
+	}
+	const queue = [root]
+
+	while (queue.length > 0) {
+		const current = queue.shift()!
+		const entries = await readdir(current, { withFileTypes: true })
+		for (const entry of entries) {
+			if (entry.name.startsWith(".")) continue
+			const fullPath = path.join(current, entry.name)
+			if (entry.isDirectory()) {
+				queue.push(fullPath)
+				continue
+			}
+			if (!entry.isFile()) continue
+
+			const extension = path.extname(entry.name).toLowerCase()
+			if (extension !== ".app" && extension !== ".opt" && extension !== ".vhd") continue
+
+			const fileStat = await stat(fullPath)
+			const picked = {
+				path: fullPath,
+				name: entry.name,
+				size: fileStat.size
+			}
+			if (extension === ".app") {
+				files.apps.push(picked)
+			} else if (extension === ".opt") {
+				files.options.push(picked)
+			} else {
+				files.vhds.push(picked)
+			}
+		}
+	}
+
+	const sortByPath = (left: { path: string }, right: { path: string }) => left.path.localeCompare(right.path)
+	files.apps.sort(sortByPath)
+	files.options.sort(sortByPath)
+	files.vhds.sort(sortByPath)
+	return { rootPath: root, files }
+}
+
+async function chooseInputFolder(window: BrowserWindow, notifyRenderer = false) {
+	const result = await dialog.showOpenDialog(window, {
+		title: "Select Input Folder",
+		properties: ["openDirectory"]
+	})
+
+	if (result.canceled || !result.filePaths[0]) {
+		return undefined
+	}
+
+	const rootPath = result.filePaths[0]
+	const config = await updateConfig({ inputRoot: rootPath })
+	const scan = await scanInputFolder(rootPath)
+	sendConfig(window, config)
+	if (notifyRenderer) {
+		window.webContents.send("inputFolder:scanned", scan)
+	}
+	return scan
+}
+
 function installMenu() {
 	const template: Electron.MenuItemConstructorOptions[] = [
 		{
 			label: "File",
 			submenu: [
+				{
+					label: "Select Input Folder...",
+					accelerator: "CmdOrCtrl+I",
+					click: () => {
+						const window = focusedWindow()
+						if (window) {
+							void chooseInputFolder(window, true)
+						}
+					}
+				},
 				{
 					label: "Select Output Folder...",
 					accelerator: "CmdOrCtrl+O",
@@ -346,6 +432,17 @@ ipcMain.handle("dialog:selectOutputFolder", async (_event) => {
 
 	return chooseOutputFolder(window)
 })
+
+ipcMain.handle("dialog:selectInputFolder", async (_event) => {
+	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
+	if (!window) {
+		return undefined
+	}
+
+	return chooseInputFolder(window)
+})
+
+ipcMain.handle("fs:scanInputFolder", async (_event, rootPath: string) => scanInputFolder(rootPath))
 
 ipcMain.handle("config:read", async () => readRendererConfig())
 
