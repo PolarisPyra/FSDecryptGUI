@@ -1,0 +1,535 @@
+import type { RefObject } from "react"
+
+import {
+	AlertTriangle,
+	CheckCircle2,
+	CircleDot,
+	Clipboard,
+	FileArchive,
+	FileKey,
+	FolderOpen,
+	FolderPlus,
+	HardDriveDownload,
+	History,
+	Link2,
+	RotateCcw,
+	Save,
+	Terminal,
+	Trash2,
+	X,
+	Zap
+} from "lucide-react"
+
+import { formatBytes, formatDuration, formatEta, formatThroughput, formatVersion } from "../../base/common/format"
+import { basename, compactPath } from "../../base/common/path"
+import type { PickedFile } from "../../electron-api"
+import { MODES } from "../common/modes"
+import type {
+	ActiveJob,
+	BaseSelectionGroup,
+	CompletedResult,
+	ExportHistoryItem,
+	KeyValidation,
+	MergeSelectionGroup,
+	OptionSelectionGroup,
+	RunStats,
+	ToolMode
+} from "../common/workbenchTypes"
+import {
+	appLayerLabel,
+	linkedOptionChild,
+	linkedOptionParent,
+	missingOptionParent,
+	optionLayerClass,
+	optionLayerDetail
+} from "../services/selectionService"
+
+function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolMode) => void }) {
+	const activeIndex = MODES.findIndex(item => item.mode === mode)
+	return (
+		<div className="mode-toggle">
+			<div className="mode-indicator" style={{ transform: `translateX(calc(${activeIndex} * (100% + 0.2rem)))` }} />
+			{MODES.map(item => {
+				const Icon = item.icon
+				return (
+					<button key={item.mode} type="button" className={mode === item.mode ? "active" : ""} onClick={() => onChange(item.mode)}>
+						<Icon size={15} />
+						<span>{item.label}</span>
+					</button>
+				)
+			})}
+		</div>
+	)
+}
+
+function MergeSelection({
+	groups,
+	isAnalyzing,
+	onRemoveFile
+}: {
+	groups: MergeSelectionGroup[]
+	isAnalyzing: boolean
+	onRemoveFile: (path: string) => void
+}) {
+	if (isAnalyzing) {
+		return <div className="muted">Reading APP chain metadata...</div>
+	}
+
+	if (groups.length === 0) {
+		return <div className="muted">None</div>
+	}
+
+	return (
+		<div className="selected-list">
+			{groups.map((group, index) => (
+				<div className="chain-card" key={group.id || index}>
+					<div className="chain-card-header">
+						<div>
+							<label>{group.rawVhds.length > 0 ? "VHD Chain" : "APP Chain"}</label>
+							<strong title={group.label}>{group.label}</strong>
+						</div>
+						<span>{group.files.length} layer{group.files.length === 1 ? "" : "s"}</span>
+					</div>
+					{group.warning && (
+						<div className="chain-warning">
+							<AlertTriangle size={14} />
+							<span>{group.warning}</span>
+						</div>
+					)}
+					<div className="chain-layers">
+						{group.appLayers.map(layer => (
+							<div className={layer.parentFile || layer.bootId?.sequenceNumber === 0 ? "chain-layer linked" : "chain-layer missing"} key={layer.file.path}>
+								{layer.bootId?.sequenceNumber === 0 && !layer.childFile ? <CircleDot size={14} /> : layer.parentFile || layer.childFile ? <Link2 size={14} /> : <AlertTriangle size={14} />}
+								<div>
+									<strong title={layer.file.name}>{layer.file.name}</strong>
+									<span>
+										{layer.error
+											? layer.error
+											: layer.bootId?.sequenceNumber === 0
+												? layer.childFile
+													? `Parent layer · child ${layer.childFile.name}`
+													: `Parent layer · ${appLayerLabel(layer)}`
+												: layer.parentFile
+													? `Child layer · parent ${layer.parentFile.name}`
+													: `Child layer · missing parent ${formatVersion(layer.bootId!.sourceVersion)}`}
+									</span>
+								</div>
+								<button
+									type="button"
+									className="remove-selection-button"
+									title={`Remove ${layer.file.name}`}
+									aria-label={`Remove ${layer.file.name}`}
+									onClick={() => onRemoveFile(layer.file.path)}
+								>
+									<X size={14} />
+								</button>
+							</div>
+						))}
+						{group.rawVhds.map(file => (
+							<div className="chain-layer linked" key={file.path}>
+								<HardDriveDownload size={14} />
+								<div>
+									<strong title={file.name}>{file.name}</strong>
+									<span>{formatBytes(file.size)}</span>
+								</div>
+								<button
+									type="button"
+									className="remove-selection-button"
+									title={`Remove ${file.name}`}
+									aria-label={`Remove ${file.name}`}
+									onClick={() => onRemoveFile(file.path)}
+								>
+									<X size={14} />
+								</button>
+							</div>
+						))}
+					</div>
+				</div>
+			))}
+		</div>
+	)
+}
+
+function OptionSelection({
+	groups,
+	isAnalyzing,
+	onRemoveFile
+}: {
+	groups: OptionSelectionGroup[]
+	isAnalyzing: boolean
+	onRemoveFile: (path: string) => void
+}) {
+	if (isAnalyzing) {
+		return <div className="muted">Reading OPTION VHD metadata...</div>
+	}
+
+	if (groups.length === 0) {
+		return <div className="muted">None</div>
+	}
+
+	const allVhds = groups.flatMap(group => group.optionLayers.flatMap(layer => layer.vhdLayers))
+	return (
+		<div className="selected-list">
+			{groups.map((group, index) => (
+				<div className="chain-card" key={group.id || index}>
+					<div className="chain-card-header">
+						<div>
+							<label>OPTION VHD Chain</label>
+							<strong title={group.label}>{group.label}</strong>
+						</div>
+						<span>{group.files.length} update{group.files.length === 1 ? "" : "s"}</span>
+					</div>
+					{group.warning && (
+						<div className="chain-warning">
+							<AlertTriangle size={14} />
+							<span>{group.warning}</span>
+						</div>
+					)}
+					<div className="chain-layers">
+						{group.optionLayers.map(layer => {
+							const className = optionLayerClass(layer, allVhds)
+							const hasParent = Boolean(linkedOptionParent(layer, allVhds))
+							const hasChild = Boolean(linkedOptionChild(layer, allVhds))
+							const isMissing = Boolean(layer.error || missingOptionParent(layer, allVhds))
+							return (
+								<div className={className} key={layer.file.path}>
+									{isMissing ? <AlertTriangle size={14} /> : hasParent || hasChild ? <Link2 size={14} /> : <CircleDot size={14} />}
+									<div>
+										<strong title={layer.file.name}>{layer.file.name}</strong>
+										<span>{optionLayerDetail(layer, allVhds)}</span>
+									</div>
+									<button
+										type="button"
+										className="remove-selection-button"
+										title={`Remove ${layer.file.name}`}
+										aria-label={`Remove ${layer.file.name}`}
+										onClick={() => onRemoveFile(layer.file.path)}
+									>
+										<X size={14} />
+									</button>
+								</div>
+							)
+						})}
+					</div>
+				</div>
+			))}
+		</div>
+	)
+}
+
+function HistoryPanel({
+	history,
+	onOpen,
+	onClear
+}: {
+	history: ExportHistoryItem[]
+	onOpen: (item: ExportHistoryItem) => void
+	onClear: () => void
+}) {
+	return (
+		<div className="history-block">
+			<div className="section-title">
+				<div>
+					<History size={15} />
+					<span>History</span>
+				</div>
+				<button
+					type="button"
+					className="icon-button"
+					disabled={history.length === 0}
+					title="Clear history"
+					aria-label="Clear history"
+					onClick={onClear}
+				>
+					<Trash2 size={15} />
+				</button>
+			</div>
+			{history.length === 0 ? (
+				<div className="muted">No exports yet</div>
+			) : (
+				<div className="history-list">
+					{history.map(item => (
+						<div className={`history-row ${item.status}`} key={item.id}>
+							{item.status === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+							<div>
+								<strong title={item.label}>{item.label}</strong>
+								<span>
+									{item.status} · {formatDuration(item.durationMs)} · {new Date(item.completedAt).toLocaleTimeString()}
+								</span>
+							</div>
+							{item.status === "success" && item.outputRoot && item.outputSegments && (
+								<button type="button" className="icon-button" title="Open output folder" aria-label="Open output folder" onClick={() => onOpen(item)}>
+									<FolderOpen size={16} />
+								</button>
+							)}
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	)
+}
+
+export type WorkbenchViewProps = {
+	mode: ToolMode
+	modeLabel: string
+	isBusy: boolean
+	canRun: boolean
+	selectedJobCount: number
+	baseGroups: BaseSelectionGroup[]
+	optionGroups: OptionSelectionGroup[]
+	mergeGroups: MergeSelectionGroup[]
+	isAnalyzingBase: boolean
+	isAnalyzingOptions: boolean
+	isAnalyzingMerge: boolean
+	keyFile: PickedFile | null
+	keyValidation: KeyValidation
+	outputRoot: string
+	configPath: string
+	configFolder: string
+	history: ExportHistoryItem[]
+	result: CompletedResult | null
+	progress: number
+	runStats: RunStats
+	activeJob: ActiveJob | null
+	logs: string[]
+	terminalRef: RefObject<HTMLDivElement | null>
+	onModeChange: (mode: ToolMode) => void
+	onRun: () => void
+	onCancelRun: () => void
+	onReset: () => void
+	onChooseApps: () => void
+	onChooseContainer: () => void
+	onChooseKey: () => void
+	onClearKey: () => void
+	onRemoveBaseFile: (path: string) => void
+	onRemoveOptionFile: (path: string) => void
+	onRemoveMergeFile: (path: string) => void
+	onSelectOutputFolder: () => void
+	onOpenOutputRootFolder: () => void
+	onOpenConfigFolder: () => void
+	onOpenResultFolder: () => void
+	onOpenHistoryFolder: (item: ExportHistoryItem) => void
+	onClearHistory: () => void
+	onCopyLogs: () => void
+	onSaveLogs: () => void
+}
+
+export function WorkbenchView(props: WorkbenchViewProps) {
+	return (
+		<div className="app-shell">
+			<header className="titlebar">
+				<div>
+					<h1>fsdecryptGUI</h1>
+					<p>Extract APP, Option, and VHD chain contents to a local folder.</p>
+				</div>
+				<div className="actions">
+					<button type="button" className="primary" disabled={!props.canRun} onClick={props.onRun}>
+						<Zap size={16} />
+						Extract {props.selectedJobCount > 1 ? props.selectedJobCount : ""}
+					</button>
+					{props.isBusy ? (
+						<button type="button" onClick={props.onCancelRun}>
+							<X size={16} />
+							Cancel
+						</button>
+					) : (
+						<button type="button" onClick={props.onReset}>
+							<RotateCcw size={16} />
+							Reset
+						</button>
+					)}
+				</div>
+			</header>
+
+			<main className="workspace">
+				<section className="left-panel">
+					<ModeToggle mode={props.mode} onChange={props.onModeChange} />
+
+					{props.mode === "vhd" ? (
+						<button type="button" className="wide-button" disabled={props.isBusy} onClick={props.onChooseApps}>
+							<HardDriveDownload size={17} />
+							Choose Apps
+						</button>
+					) : (
+						<button type="button" className="wide-button" disabled={props.isBusy} onClick={props.onChooseContainer}>
+							<FileArchive size={17} />
+							{props.mode === "option" ? "Choose Updates" : "Choose Games"}
+						</button>
+					)}
+					<button type="button" className="wide-button" disabled={props.isBusy} onClick={props.onChooseKey}>
+						<FileKey size={17} />
+						Choose Key
+					</button>
+
+					<div className="info-block selected-block">
+						<label>Selected</label>
+						{props.mode === "vhd" ? (
+							<MergeSelection groups={props.mergeGroups} isAnalyzing={props.isAnalyzingMerge} onRemoveFile={props.onRemoveMergeFile} />
+						) : props.mode === "option" ? (
+							<OptionSelection groups={props.optionGroups} isAnalyzing={props.isAnalyzingOptions} onRemoveFile={props.onRemoveOptionFile} />
+						) : (
+							<MergeSelection groups={props.baseGroups} isAnalyzing={props.isAnalyzingBase} onRemoveFile={props.onRemoveBaseFile} />
+						)}
+						<hr />
+						<label>Key</label>
+						<div className={`key-status ${props.keyValidation.status}`}>
+							{props.keyValidation.status === "invalid" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+							<div>
+								<div className="key-heading">
+									<strong className="truncate" title={props.keyFile?.path ?? props.keyValidation.label}>{props.keyFile?.name ?? props.keyValidation.label}</strong>
+									<span>{props.keyValidation.label}</span>
+								</div>
+								<span>{props.keyValidation.detail}</span>
+							</div>
+							{props.keyFile && (
+								<button type="button" className="icon-button" disabled={props.isBusy} title="Clear key" aria-label="Clear key" onClick={props.onClearKey}>
+									<X size={15} />
+								</button>
+							)}
+						</div>
+						<hr />
+						<label>Output Root</label>
+						<div className="path-action-row has-two-actions">
+							<strong className="truncate" title={props.outputRoot || "File > Select Output Folder"}>
+								{props.outputRoot ? basename(props.outputRoot) : "File > Select Output Folder"}
+							</strong>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={props.isBusy}
+								title="Select output folder"
+								aria-label="Select output folder"
+								onClick={props.onSelectOutputFolder}
+							>
+								<FolderPlus size={16} />
+							</button>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={!props.outputRoot}
+								title="Open output folder"
+								aria-label="Open output folder"
+								onClick={props.onOpenOutputRootFolder}
+							>
+								<FolderOpen size={16} />
+							</button>
+						</div>
+						<hr />
+						<label>Config Folder</label>
+						<div className="path-action-row">
+							<strong className="truncate" title={props.configFolder || props.configPath || "config.yaml"}>
+								{props.configFolder ? compactPath(props.configFolder) : "config.yaml"}
+							</strong>
+							<button
+								type="button"
+								className="icon-button"
+								disabled={!props.configFolder}
+								title="Open config folder"
+								aria-label="Open config folder"
+								onClick={props.onOpenConfigFolder}
+							>
+								<FolderOpen size={16} />
+							</button>
+						</div>
+					</div>
+
+					<HistoryPanel history={props.history} onOpen={props.onOpenHistoryFolder} onClear={props.onClearHistory} />
+				</section>
+
+				<section className="main-panel">
+					<div className="summary-grid">
+						<div>
+							<label>Mode</label>
+							<strong>{props.modeLabel}</strong>
+						</div>
+						<div>
+							<label>Jobs</label>
+							<strong>{props.selectedJobCount}</strong>
+						</div>
+						<div>
+							<label>Output</label>
+							<div className={props.result ? "path-action-row" : ""}>
+								<strong className={!props.result ? "muted" : ""}>{props.result?.outputFolder ?? "Pending"}</strong>
+								{props.result && (
+									<button
+										type="button"
+										className="icon-button"
+										title="Open output folder"
+										aria-label="Open output folder"
+										onClick={props.onOpenResultFolder}
+									>
+										<FolderOpen size={16} />
+									</button>
+								)}
+							</div>
+						</div>
+					</div>
+
+					{(props.isBusy || props.progress > 0) && (
+						<div className="progress-block">
+							<div>
+								<span>{props.activeJob ? `${props.activeJob.index}/${props.activeJob.total} ${props.activeJob.label}` : "Progress"}</span>
+								<strong>{props.progress}%</strong>
+							</div>
+							<progress value={props.progress} max={100} />
+							<div className="stats-grid">
+								<div>
+									<label>Elapsed</label>
+									<strong>{formatDuration(props.runStats.elapsedMs)}</strong>
+								</div>
+								<div>
+									<label>Throughput</label>
+									<strong>{formatThroughput(props.runStats.bytesWritten, props.runStats.elapsedMs)}</strong>
+								</div>
+								<div>
+									<label>ETA</label>
+									<strong>{formatEta(props.runStats)}</strong>
+								</div>
+							</div>
+						</div>
+					)}
+
+					{props.result ? (
+						<div className="result-grid">
+							{props.result.details.map(detail => (
+								<div key={detail.label}>
+									<label>{detail.label}</label>
+									<strong>{detail.value}</strong>
+								</div>
+							))}
+							<div>
+								<label>Size</label>
+								<strong>{formatBytes(props.result.outputSize)}</strong>
+							</div>
+						</div>
+					) : (
+						<div className="empty-state">Ready</div>
+					)}
+				</section>
+
+				<section className="log-panel">
+					<div className="log-title">
+						<div className="log-title-label">
+							<Terminal size={16} />
+							Log
+						</div>
+						<div className="log-actions">
+							<button type="button" className="icon-button" disabled={props.logs.length === 0} title="Copy log" aria-label="Copy log" onClick={props.onCopyLogs}>
+								<Clipboard size={15} />
+							</button>
+							<button type="button" className="icon-button" disabled={props.logs.length === 0} title="Save log" aria-label="Save log" onClick={props.onSaveLogs}>
+								<Save size={15} />
+							</button>
+						</div>
+					</div>
+					<div className="terminal" ref={props.terminalRef}>
+						{props.logs.map((line, index) => (
+							<div key={`${line}-${index}`}>{line}</div>
+						))}
+					</div>
+				</section>
+			</main>
+		</div>
+	)
+}
