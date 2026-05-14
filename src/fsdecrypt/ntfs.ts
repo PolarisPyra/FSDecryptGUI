@@ -13,6 +13,8 @@ const NTFS_FILE_ATTRIBUTE_DIRECTORY = 0x10000000
 const NTFS_FILE_RECORD_DIRECTORY = 0x02
 const EXTRACTION_CONCURRENCY = 4
 const LARGE_FILE_THRESHOLD = 64 * 1024 * 1024
+const EXTRACTION_READ_CHUNK_SIZE = 1024 * 1024
+const EXTRACTION_PROGRESS_LOG_INTERVAL = 16 * 1024 * 1024
 
 type LocalOutputSink = {
 	write: (chunk: Uint8Array) => Promise<void>
@@ -77,6 +79,7 @@ export type NtfsExtractionResult = {
 type NtfsExtractionOptions = {
 	onLog?: (message: string) => void
 	onTotalBytes?: (bytes: number) => void
+	onExtractedBytes?: (bytes: number) => void
 	signal?: AbortSignal
 	fileConcurrency?: number
 }
@@ -85,6 +88,14 @@ type ExtractionPlan = {
 	directories: string[][]
 	files: Array<{ path: string[]; source: ReadableByteSource }>
 	bytes: number
+}
+
+type ExtractionReadProgress = {
+	signal?: AbortSignal
+	onBytes?: (bytes: number) => void
+	onLog?: (message: string) => void
+	path?: string[]
+	size?: number
 }
 
 function readAscii(bytes: Uint8Array) {
@@ -137,6 +148,48 @@ function sanitizePathSegment(name: string) {
 function throwIfAborted(signal: AbortSignal | undefined) {
 	if (signal?.aborted) {
 		throw new DOMException("Extraction cancelled", "AbortError")
+	}
+}
+
+function yieldToUi() {
+	return new Promise<void>(resolve => {
+		globalThis.setTimeout(resolve, 0)
+	})
+}
+
+function createExtractionReadProgress(
+	options: NtfsExtractionOptions,
+	path: string[],
+	size: number
+): ExtractionReadProgress | undefined {
+	if (!options.onExtractedBytes && !options.onLog && !options.signal) {
+		return undefined
+	}
+
+	let readBytes = 0
+	let nextLogAt = EXTRACTION_PROGRESS_LOG_INTERVAL
+	const pathText = path.join("/")
+
+	return {
+		signal: options.signal,
+		path,
+		size,
+		onBytes: bytes => {
+			if (bytes <= 0) {
+				return
+			}
+
+			readBytes += bytes
+			options.onExtractedBytes?.(bytes)
+
+			if (size >= LARGE_FILE_THRESHOLD && readBytes >= nextLogAt) {
+				const percent = Math.min(100, (readBytes / size) * 100).toFixed(1)
+				options.onLog?.(`Reading ${pathText}: ${readBytes.toLocaleString()}/${size.toLocaleString()} bytes (${percent}%)`)
+				while (readBytes >= nextLogAt) {
+					nextLogAt += EXTRACTION_PROGRESS_LOG_INTERVAL
+				}
+			}
+		}
 	}
 }
 
@@ -235,25 +288,45 @@ async function readRuns(
 	runs: NtfsRun[],
 	clusterSize: number,
 	offset: number,
-	length: number
+	length: number,
+	progress?: ExtractionReadProgress
 ) {
 	const output = new Uint8Array(length)
 	let outputOffset = 0
 	let runStart = 0
 
 	for (const run of runs) {
+		throwIfAborted(progress?.signal)
 		const runBytes = run.length * clusterSize
 		const runEnd = runStart + runBytes
 
 		if (offset < runEnd && offset + length > runStart) {
 			const withinRun = Math.max(0, offset - runStart)
 			const copyLength = Math.min(runBytes - withinRun, length - outputOffset)
+			let copiedFromRun = 0
 
-			if (run.lcn >= 0) {
-				output.set(await source.read(run.lcn * clusterSize + withinRun, copyLength), outputOffset)
+			while (copiedFromRun < copyLength) {
+				throwIfAborted(progress?.signal)
+				const chunkLength = progress
+					? Math.min(EXTRACTION_READ_CHUNK_SIZE, copyLength - copiedFromRun)
+					: copyLength - copiedFromRun
+
+				if (run.lcn >= 0) {
+					output.set(
+						await source.read(run.lcn * clusterSize + withinRun + copiedFromRun, chunkLength),
+						outputOffset
+					)
+				}
+
+				outputOffset += chunkLength
+				copiedFromRun += chunkLength
+				progress?.onBytes?.(chunkLength)
+
+				if (progress) {
+					await yieldToUi()
+				}
 			}
 
-			outputOffset += copyLength
 			if (outputOffset >= length) {
 				break
 			}
@@ -333,7 +406,7 @@ async function buildNtfsContext(source: ReadableByteSource): Promise<NtfsContext
 	}
 
 	const data = parseDataAttribute(recordZero, mftData.offset)
-	if (data.resident) {
+	if (data.resident === true) {
 		throw new Error(`${source.name} has unsupported resident $MFT data`)
 	}
 
@@ -385,7 +458,7 @@ function parseIndexRootEntries(value: Uint8Array) {
 }
 
 async function parseIndexAllocationEntries(ctx: NtfsContext, data: DataAttribute, indexBlockSize: number) {
-	if (data.resident) {
+	if (data.resident === true) {
 		return []
 	}
 
@@ -422,7 +495,7 @@ async function readDirectoryEntries(ctx: NtfsContext, recordNumber: number) {
 	}
 
 	const rootData = parseDataAttribute(directoryRecord, indexRoot.offset)
-	if (!rootData.resident) {
+	if (rootData.resident !== true) {
 		throw new Error(`${ctx.source.name} has unsupported non-resident directory index`)
 	}
 
@@ -440,23 +513,30 @@ function sourceFromDataAttribute(
 	source: ReadableByteSource,
 	boot: NtfsBoot,
 	data: DataAttribute,
-	sizeHint: number
+	sizeHint: number,
+	progress?: ExtractionReadProgress
 ): ReadableByteSource {
-	const size = data.resident ? data.value.length : data.realSize || sizeHint
+	const size = data.resident === true ? data.value.length : data.realSize || sizeHint
 	return {
 		name,
 		size,
 		read: async (offset, length) => {
+			throwIfAborted(progress?.signal)
 			const cappedLength = Math.min(length, size - offset)
 			if (cappedLength <= 0) {
 				return new Uint8Array()
 			}
 
-			if (data.resident) {
-				return data.value.slice(offset, offset + cappedLength)
+			if (data.resident === true) {
+				const output = data.value.slice(offset, offset + cappedLength)
+				progress?.onBytes?.(output.length)
+				if (progress && output.length >= EXTRACTION_READ_CHUNK_SIZE) {
+					await yieldToUi()
+				}
+				return output
 			}
 
-			return readRuns(source, data.runs, boot.clusterSize, offset, cappedLength)
+			return readRuns(source, data.runs, boot.clusterSize, offset, cappedLength, progress)
 		}
 	}
 }
@@ -544,7 +624,15 @@ async function planDirectory(
 		}
 
 		const data = parseDataAttribute(childRecord, dataAttr.offset)
-		const fileSource = sourceFromDataAttribute(safeName, ctx.source, ctx.boot, data, entry.size)
+		const fileSize = data.resident === true ? data.value.length : data.realSize || entry.size
+		const fileSource = sourceFromDataAttribute(
+			safeName,
+			ctx.source,
+			ctx.boot,
+			data,
+			entry.size,
+			createExtractionReadProgress(options, childPath, fileSize)
+		)
 		plan.files.push({ path: childPath, source: fileSource })
 		plan.bytes += fileSource.size
 	})
@@ -621,7 +709,7 @@ async function scanDirectoryBytes(
 		}
 
 		const data = parseDataAttribute(childRecord, dataAttr.offset)
-		const fileSize = data.resident ? data.value.length : data.realSize || entry.size
+		const fileSize = data.resident === true ? data.value.length : data.realSize || entry.size
 		totalBytes += fileSize
 	})
 

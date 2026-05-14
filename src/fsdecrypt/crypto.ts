@@ -3,6 +3,7 @@ import aesjs from "aes-js"
 type ByteSource = ArrayBuffer | Uint8Array | number[]
 
 type AesBlockCipher = {
+	encrypt(data: ByteSource): Uint8Array
 	decrypt(data: ByteSource): Uint8Array
 }
 

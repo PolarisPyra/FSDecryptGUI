@@ -14,6 +14,15 @@ const NTFS_HEADER = "eb52904e544653202020200010010000"
 const EXFAT_HEADER = "eb769045584641542020200000000000"
 const OPTION_KEY = "5c84a9e726eaa5dd351f2b0750c23697"
 const OPTION_IV = "c063bf6f562d084d7963c987f5281761"
+const APM3_KEYGEN_KEY = "873df632b988ae14aa9f736b03a51c4f"
+const APM3_KEYGEN_IV = "357dc19030d8e8d4941a7e6aceb94e4c"
+const APM3_KEYGEN_SEED =
+	"C73CDDBF7AFB0EBCE6DED4D9B3DF3B03" +
+	"3FE140E4F4FF96C579908B5B696ABEEE" +
+	"326C5EEA47C0A34051DC55BF8C2A807B" +
+	"E4C6E3EF2F153084693CE2D21EF1BB13" +
+	"DCC96D317C3FCC7AB944636D65C28BB8" +
+	"E2F7748DC64208A873414B787E3F1866"
 
 export const FSCRYPT_CONTAINER_TYPE = {
 	OS: 0,
@@ -80,6 +89,10 @@ export type FsdecryptOptions = {
 type GameKeys = {
 	key: string
 	iv?: string
+}
+
+type ResolvedGameKeys = GameKeys & {
+	source: "built-in" | "external" | "APM3"
 }
 
 const GAME_KEYS: Record<string, GameKeys> = {
@@ -159,6 +172,8 @@ const GAME_KEYS: Record<string, GameKeys> = {
 
 export const BUILT_IN_KEY_IDS = [...Object.keys(GAME_KEYS).sort(), "OPTION"]
 
+const apm3KeyCache = new Map<string, GameKeys>()
+
 function bytesEqual(left: Uint8Array, right: Uint8Array) {
 	return left.length === right.length && left.every((value, index) => value === right[index])
 }
@@ -232,7 +247,99 @@ function calculateFileIv(key: string, expectedHeader: string, firstPage: Uint8Ar
 	return output
 }
 
-function outputFilename(bootId: FscryptBootId) {
+function encryptCbcNoPadding(data: Uint8Array, keyHex: string, ivHex: string) {
+	const cipher = new AesBlock(hexToBytes(keyHex))
+	const output = new Uint8Array(data.length)
+	let previous = new Uint8Array(hexToBytes(ivHex))
+
+	for (let blockOffset = 0; blockOffset < data.length; blockOffset += 16) {
+		const block = data.subarray(blockOffset, blockOffset + 16)
+		const plain = new Uint8Array(16)
+		for (let index = 0; index < 16; index++) {
+			plain[index] = block[index] ^ previous[index]
+		}
+		const encrypted = cipher.encrypt(plain)
+		output.set(encrypted, blockOffset)
+		previous = new Uint8Array(encrypted)
+	}
+
+	return output
+}
+
+function deriveApm3GameKeys(gameId: string): GameKeys | undefined {
+	if (gameId.length !== 4) {
+		return undefined
+	}
+
+	const cached = apm3KeyCache.get(gameId)
+	if (cached) {
+		return cached
+	}
+
+	const seed = new Uint8Array(hexToBytes(APM3_KEYGEN_SEED))
+	const decryptedSeed = decryptCbcNoPadding(seed, APM3_KEYGEN_KEY, APM3_KEYGEN_IV)
+	const derived = encryptCbcNoPadding(
+		decryptedSeed.slice(64, 96),
+		bytesToHex(decryptedSeed.slice(0, 16)),
+		bytesToHex(decryptedSeed.slice(16, 32))
+	)
+	const key = derived.slice(0, 16)
+	const iv = derived.slice(16, 32)
+
+	for (let index = 0; index < 16; index++) {
+		const gameByte = gameId.charCodeAt(index % 4) & 0xff
+		key[index] ^= gameByte
+		iv[index] ^= gameByte
+	}
+
+	const keys = { key: bytesToHex(key), iv: bytesToHex(iv) }
+	apm3KeyCache.set(gameId, keys)
+	return keys
+}
+
+function optionFilesystemExtension(bootSector: Uint8Array) {
+	const oemId = ascii(bootSector.slice(3, 11))
+	if (oemId === "EXFAT") return "exfat"
+	if (oemId === "NTFS") return "ntfs"
+	return undefined
+}
+
+function isPlausibleNtfsBoot(bootSector: Uint8Array) {
+	if (optionFilesystemExtension(bootSector) !== "ntfs" || bootSector[510] !== 0x55 || bootSector[511] !== 0xaa) {
+		return false
+	}
+
+	const view = new DataView(bootSector.buffer, bootSector.byteOffset, bootSector.byteLength)
+	const bytesPerSector = view.getUint16(0x0b, true)
+	const sectorsPerCluster = bootSector[0x0d]
+	const recordSizeByte = view.getInt8(0x40)
+	return [512, 1024, 2048, 4096].includes(bytesPerSector) && sectorsPerCluster > 0 && recordSizeByte !== 0
+}
+
+function isPlausibleExfatBoot(bootSector: Uint8Array) {
+	if (optionFilesystemExtension(bootSector) !== "exfat" || bootSector[510] !== 0x55 || bootSector[511] !== 0xaa) {
+		return false
+	}
+
+	const view = new DataView(bootSector.buffer, bootSector.byteOffset, bootSector.byteLength)
+	const bytesPerSectorShift = bootSector[0x6c]
+	const sectorsPerClusterShift = bootSector[0x6d]
+	const clusterCount = view.getUint32(0x5c, true)
+	const rootDirectoryCluster = view.getUint32(0x60, true)
+	return (
+		bytesPerSectorShift >= 9 &&
+		bytesPerSectorShift <= 12 &&
+		sectorsPerClusterShift <= 25 &&
+		clusterCount > 0 &&
+		rootDirectoryCluster >= 2
+	)
+}
+
+function isPlausibleOptionBoot(bootSector: Uint8Array) {
+	return isPlausibleNtfsBoot(bootSector) || isPlausibleExfatBoot(bootSector)
+}
+
+function outputFilename(bootId: FscryptBootId, optionExtension = "exfat") {
 	const timestamp = formatTimestamp(bootId.targetTimestamp)
 
 	if (bootId.containerType === FSCRYPT_CONTAINER_TYPE.OS) {
@@ -247,7 +354,7 @@ function outputFilename(bootId: FscryptBootId) {
 		return `${bootId.gameId}_${formatVersion(bootId.targetVersion)}_${timestamp}_${bootId.sequenceNumber}.ntfs`
 	}
 
-	return `${bootId.gameId}_${bootId.targetOption}_${timestamp}_${bootId.sequenceNumber}.exfat`
+	return `${bootId.gameId}_${bootId.targetOption}_${timestamp}_${bootId.sequenceNumber}.${optionExtension}`
 }
 
 function toByteSource(file: FscryptInput): ReadableByteSource {
@@ -283,18 +390,39 @@ async function customKeys(keyFile?: FscryptInput): Promise<GameKeys | undefined>
 	return { key, iv: bytesToHex(iv) }
 }
 
-async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile?: FscryptInput): Promise<GameKeys> {
+async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile?: FscryptInput): Promise<ResolvedGameKeys> {
 	if (bootId.containerType === FSCRYPT_CONTAINER_TYPE.OPTION) {
-		const keys = (await customKeys(keyFile)) ?? { key: OPTION_KEY, iv: OPTION_IV }
-		const iv =
-			!bootId.useCustomIv && keys.iv
-				? keys.iv
-			: bytesToHex(calculateFileIv(keys.key, EXFAT_HEADER, firstPage))
-		return { key: keys.key, iv }
+		const externalKeys = await customKeys(keyFile)
+		const apm3Keys = deriveApm3GameKeys(bootId.gameId)
+		const candidates = [
+			...(externalKeys ? [{ ...externalKeys, source: "external" as const }] : []),
+			{ key: OPTION_KEY, iv: OPTION_IV, source: "built-in" as const },
+			...(GAME_KEYS[bootId.gameId] ? [{ ...GAME_KEYS[bootId.gameId], source: "built-in" as const }] : []),
+			...(apm3Keys ? [{ ...apm3Keys, source: "APM3" as const }] : [])
+		]
+
+		for (const keys of candidates) {
+			const ivs = [
+				...(!bootId.useCustomIv && keys.iv ? [keys.iv] : []),
+				bytesToHex(calculateFileIv(keys.key, EXFAT_HEADER, firstPage)),
+				bytesToHex(calculateFileIv(keys.key, NTFS_HEADER, firstPage))
+			]
+
+			for (const iv of ivs) {
+				const bootSector = decryptCbcNoPadding(firstPage.slice(0, 512), keys.key, iv)
+				if (isPlausibleOptionBoot(bootSector)) {
+					return { key: keys.key, iv, source: keys.source }
+				}
+			}
+		}
+
+		throw new Error(`No valid OPTION decryption key available for ${bootId.gameId}`)
 	}
 
 	const keyName = bootId.containerType === FSCRYPT_CONTAINER_TYPE.OS ? bootId.osId : bootId.gameId
-	const keys = GAME_KEYS[keyName] ?? (await customKeys(keyFile))
+	const builtInKeys = GAME_KEYS[keyName]
+	const externalKeys = builtInKeys ? undefined : await customKeys(keyFile)
+	const keys = builtInKeys ?? externalKeys
 	if (!keys) {
 		throw new Error(`No decryption keys available for ${keyName}`)
 	}
@@ -304,7 +432,7 @@ async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile
 			? keys.iv
 		: bytesToHex(calculateFileIv(keys.key, NTFS_HEADER, firstPage))
 
-	return { key: keys.key, iv }
+	return { key: keys.key, iv, source: builtInKeys ? "built-in" : "external" }
 }
 
 function checkedNumber(value: bigint, label: string) {
@@ -355,15 +483,13 @@ export async function openFscryptSource(
 	const outputSize = (bootId.blockCount - bootId.headerBlockCount) * bootId.blockSize
 	const dataOffsetNumber = checkedNumber(dataOffset, "Data offset")
 	const outputSizeNumber = checkedNumber(outputSize, "Output size")
-	const filename = outputFilename(bootId)
-	onLog?.(`Container type: ${describeContainerType(bootId.containerType)}, plaintext view: ${filename}`)
 	onLog?.(
 		`Data starts at ${dataOffsetNumber.toLocaleString()} bytes, plaintext size ${outputSizeNumber.toLocaleString()} bytes`
 	)
 
 	const firstPage = await source.read(dataOffsetNumber, PAGE_SIZE)
 	const keys = await resolveKeys(bootId, firstPage, keyFile)
-	onLog?.(`Using ${keyFile ? "external" : "built-in"} key material`)
+	onLog?.(`Using ${keys.source} key material`)
 
 	if (!keys.iv) {
 		throw new Error("Missing file IV")
@@ -378,44 +504,53 @@ export async function openFscryptSource(
 			? "Using native Electron decrypt for large reads"
 			: decryptWorkers > 0
 				? `Using ${decryptWorkers} decrypt worker(s) for large reads`
-				: "Using inline decrypt for small reads"
+				: "Using inline decrypt for all non-native reads"
 	)
+
+	const readPlainRange = async (offset: number, length: number) => {
+		if (offset < 0 || length < 0 || offset > outputSizeNumber) {
+			throw new Error(`Invalid plaintext read ${offset}+${length}`)
+		}
+
+		const cappedLength = Math.min(length, outputSizeNumber - offset)
+		if (cappedLength === 0) {
+			return new Uint8Array()
+		}
+
+		const firstPageOffset = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE
+		const lastPageOffset = Math.ceil((offset + cappedLength) / PAGE_SIZE) * PAGE_SIZE
+		const encryptedLength = Math.min(lastPageOffset, outputSizeNumber) - firstPageOffset
+		if (source.decryptFscryptRange) {
+			const decrypted = await source.decryptFscryptRange({
+				dataOffset: dataOffsetNumber,
+				outputSize: outputSizeNumber,
+				keyHex: keys.key,
+				ivHex,
+				offset,
+				length: cappedLength,
+				pageSize: PAGE_SIZE
+			})
+			return decrypted
+		}
+		const encrypted = await source.read(dataOffsetNumber + firstPageOffset, encryptedLength)
+		const decrypted = await decryptFscryptPages(keys.key, fileIv, firstPageOffset, encrypted, PAGE_SIZE)
+
+		return decrypted.slice(offset - firstPageOffset, offset - firstPageOffset + cappedLength)
+	}
+
+	const optionExtension =
+		bootId.containerType === FSCRYPT_CONTAINER_TYPE.OPTION
+			? (optionFilesystemExtension(await readPlainRange(0, 512)) ?? "img")
+			: undefined
+	const filename = outputFilename(bootId, optionExtension)
+	onLog?.(`Container type: ${describeContainerType(bootId.containerType)}, plaintext view: ${filename}`)
 
 	return {
 		name: filename,
 		size: outputSizeNumber,
 		bootId,
 		outputFilename: filename,
-		read: async (offset, length) => {
-			if (offset < 0 || length < 0 || offset > outputSizeNumber) {
-				throw new Error(`Invalid plaintext read ${offset}+${length}`)
-			}
-
-			const cappedLength = Math.min(length, outputSizeNumber - offset)
-			if (cappedLength === 0) {
-				return new Uint8Array()
-			}
-
-			const firstPageOffset = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE
-			const lastPageOffset = Math.ceil((offset + cappedLength) / PAGE_SIZE) * PAGE_SIZE
-			const encryptedLength = Math.min(lastPageOffset, outputSizeNumber) - firstPageOffset
-			if (source.decryptFscryptRange) {
-				const decrypted = await source.decryptFscryptRange({
-					dataOffset: dataOffsetNumber,
-					outputSize: outputSizeNumber,
-					keyHex: keys.key,
-					ivHex,
-					offset,
-					length: cappedLength,
-					pageSize: PAGE_SIZE
-				})
-				return decrypted
-			}
-			const encrypted = await source.read(dataOffsetNumber + firstPageOffset, encryptedLength)
-			const decrypted = await decryptFscryptPages(keys.key, fileIv, firstPageOffset, encrypted, PAGE_SIZE)
-
-			return decrypted.slice(offset - firstPageOffset, offset - firstPageOffset + cappedLength)
-		}
+		read: readPlainRange
 	}
 }
 

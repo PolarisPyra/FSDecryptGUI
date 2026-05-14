@@ -12,6 +12,8 @@ const EXFAT_CLUSTER_END = 0xfffffff8
 const EXFAT_DIRECTORY_ENTRY_SIZE = 32
 const EXTRACTION_CONCURRENCY = 4
 const LARGE_FILE_THRESHOLD = 64 * 1024 * 1024
+const EXTRACTION_READ_CHUNK_SIZE = 1024 * 1024
+const EXTRACTION_PROGRESS_LOG_INTERVAL = 16 * 1024 * 1024
 
 export type ExfatExtractionWriter = {
 	createDirectory: (path: string[]) => Promise<void>
@@ -27,6 +29,7 @@ export type ExfatExtractionResult = {
 type ExfatExtractionOptions = {
 	onLog?: (message: string) => void
 	onTotalBytes?: (bytes: number) => void
+	onExtractedBytes?: (bytes: number) => void
 	signal?: AbortSignal
 	fileConcurrency?: number
 }
@@ -54,6 +57,14 @@ type ExtractionPlan = {
 	directories: string[][]
 	files: Array<{ path: string[]; entry: ExfatEntry }>
 	bytes: number
+}
+
+type ExtractionReadProgress = {
+	signal?: AbortSignal
+	onBytes?: (bytes: number) => void
+	onLog?: (message: string) => void
+	path?: string[]
+	size?: number
 }
 
 function readAscii(bytes: Uint8Array) {
@@ -95,6 +106,48 @@ function sanitizePathSegment(name: string) {
 function throwIfAborted(signal: AbortSignal | undefined) {
 	if (signal?.aborted) {
 		throw new DOMException("Extraction cancelled", "AbortError")
+	}
+}
+
+function yieldToUi() {
+	return new Promise<void>(resolve => {
+		globalThis.setTimeout(resolve, 0)
+	})
+}
+
+function createExtractionReadProgress(
+	options: ExfatExtractionOptions,
+	path: string[],
+	size: number
+): ExtractionReadProgress | undefined {
+	if (!options.onExtractedBytes && !options.onLog && !options.signal) {
+		return undefined
+	}
+
+	let readBytes = 0
+	let nextLogAt = EXTRACTION_PROGRESS_LOG_INTERVAL
+	const pathText = path.join("/")
+
+	return {
+		signal: options.signal,
+		path,
+		size,
+		onBytes: bytes => {
+			if (bytes <= 0) {
+				return
+			}
+
+			readBytes += bytes
+			options.onExtractedBytes?.(bytes)
+
+			if (size >= LARGE_FILE_THRESHOLD && readBytes >= nextLogAt) {
+				const percent = Math.min(100, (readBytes / size) * 100).toFixed(1)
+				options.onLog?.(`Reading ${pathText}: ${readBytes.toLocaleString()}/${size.toLocaleString()} bytes (${percent}%)`)
+				while (readBytes >= nextLogAt) {
+					nextLogAt += EXTRACTION_PROGRESS_LOG_INTERVAL
+				}
+			}
+		}
 	}
 }
 
@@ -217,12 +270,14 @@ function sourceFromClusterStream(
 	name: string,
 	firstCluster: number,
 	size: number,
-	noFatChain: boolean
+	noFatChain: boolean,
+	progress?: ExtractionReadProgress
 ): ReadableByteSource {
 	return {
 		name,
 		size,
 		read: async (offset, length) => {
+			throwIfAborted(progress?.signal)
 			const cappedLength = Math.min(length, size - offset)
 			if (cappedLength <= 0) {
 				return new Uint8Array()
@@ -234,12 +289,31 @@ function sourceFromClusterStream(
 			let streamOffset = 0
 
 			for (const cluster of clusters) {
+				throwIfAborted(progress?.signal)
 				const clusterEnd = streamOffset + ctx.clusterSize
 				if (offset < clusterEnd && offset + cappedLength > streamOffset) {
 					const withinCluster = Math.max(0, offset - streamOffset)
 					const copyLength = Math.min(ctx.clusterSize - withinCluster, cappedLength - outputOffset)
-					output.set(await ctx.source.read(clusterOffset(ctx, cluster) + withinCluster, copyLength), outputOffset)
-					outputOffset += copyLength
+					let copiedFromCluster = 0
+
+					while (copiedFromCluster < copyLength) {
+						throwIfAborted(progress?.signal)
+						const chunkLength = progress
+							? Math.min(EXTRACTION_READ_CHUNK_SIZE, copyLength - copiedFromCluster)
+							: copyLength - copiedFromCluster
+						output.set(
+							await ctx.source.read(clusterOffset(ctx, cluster) + withinCluster + copiedFromCluster, chunkLength),
+							outputOffset
+						)
+						outputOffset += chunkLength
+						copiedFromCluster += chunkLength
+						progress?.onBytes?.(chunkLength)
+
+						if (progress) {
+							await yieldToUi()
+						}
+					}
+
 					if (outputOffset >= cappedLength) {
 						break
 					}
@@ -400,7 +474,14 @@ async function extractPlan(
 
 	for (const { path: filePath, entry } of largeFiles) {
 		throwIfAborted(options.signal)
-		const fileSource = sourceFromClusterStream(ctx, entry.name, entry.firstCluster, entry.size, entry.noFatChain)
+		const fileSource = sourceFromClusterStream(
+			ctx,
+			entry.name,
+			entry.firstCluster,
+			entry.size,
+			entry.noFatChain,
+			createExtractionReadProgress(options, filePath, entry.size)
+		)
 		if (fileSource.size >= 1024 * 1024) {
 			options.onLog?.(`Extracting ${filePath.join("/")} (${fileSource.size.toLocaleString()} bytes)`)
 		}
@@ -411,7 +492,14 @@ async function extractPlan(
 
 	await runLimited(smallFiles, options.fileConcurrency ?? EXTRACTION_CONCURRENCY, async ({ path: filePath, entry }) => {
 		throwIfAborted(options.signal)
-		const fileSource = sourceFromClusterStream(ctx, entry.name, entry.firstCluster, entry.size, entry.noFatChain)
+		const fileSource = sourceFromClusterStream(
+			ctx,
+			entry.name,
+			entry.firstCluster,
+			entry.size,
+			entry.noFatChain,
+			createExtractionReadProgress(options, filePath, entry.size)
+		)
 		if (fileSource.size >= 1024 * 1024) {
 			options.onLog?.(`Extracting ${filePath.join("/")} (${fileSource.size.toLocaleString()} bytes)`)
 		}

@@ -1,7 +1,7 @@
 import { decryptFscryptPagesLocal } from "./crypto"
 
-const MIN_WORKER_BYTES = 1024 * 1024
-const MAX_WORKERS = 4
+const MIN_WORKER_BYTES = Number.MAX_SAFE_INTEGER
+const MAX_WORKERS = 0
 
 type DecryptRequest = {
 	id: number
@@ -99,12 +99,7 @@ class DecryptWorkerPool {
 let pool: DecryptWorkerPool | undefined
 
 function workerCount() {
-	if (typeof Worker === "undefined") {
-		return 0
-	}
-
-	const cpuCount = typeof navigator === "undefined" ? 2 : navigator.hardwareConcurrency || 2
-	return Math.max(1, Math.min(MAX_WORKERS, cpuCount - 1))
+	return 0
 }
 
 function decryptPool() {
