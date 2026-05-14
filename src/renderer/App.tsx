@@ -1,19 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { FileArchive, FileKey, FolderOpen, HardDriveDownload, RotateCcw, Terminal, X, Zap } from "lucide-react"
+import {
+	AlertTriangle,
+	CheckCircle2,
+	CircleDot,
+	FileArchive,
+	FileKey,
+	FolderOpen,
+	HardDriveDownload,
+	History,
+	Link2,
+	RotateCcw,
+	Terminal,
+	X,
+	Zap
+} from "lucide-react"
 
 import { ReadableByteSource } from "../fsdecrypt/byte-source"
 import { extractExfatContents } from "../fsdecrypt/exfat"
-import { FSCRYPT_CONTAINER_TYPE, describeContainerType, openFscryptSource } from "../fsdecrypt/fsdecrypt"
+import { FSCRYPT_CONTAINER_TYPE, FscryptBootId, describeContainerType, openFscryptSource } from "../fsdecrypt/fsdecrypt"
 import { NtfsExtractionWriter, appContainersToVhdSources, extractInternalVhdSource, extractNtfsContents } from "../fsdecrypt/ntfs"
 import { VhdNtfsSource, openVhdChainNtfsSource } from "../fsdecrypt/vhd"
 import { PickedFile, RendererConfig, byteSourceFromPickedFile } from "./electron-api"
 
 type ToolMode = "container" | "option" | "vhd"
+type HistoryStatus = "success" | "failed" | "cancelled"
 
 type CompletedResult = {
 	outputFolder: string
 	outputSegments: string[]
+	outputRoot: string
 	outputSize: number
 	details: Array<{ label: string; value: string }>
 }
@@ -24,7 +40,45 @@ type RunStats = {
 	totalBytes: number
 }
 
+type VersionLike = {
+	major: number
+	minor: number
+	release: number
+}
+
+type AppLayerInfo = {
+	file: PickedFile
+	bootId?: FscryptBootId
+	error?: string
+	parentFile?: PickedFile
+}
+
+type MergeSelectionGroup = {
+	id: string
+	label: string
+	files: PickedFile[]
+	appLayers: AppLayerInfo[]
+	rawVhds: PickedFile[]
+	warning?: string
+}
+
+type ExportHistoryItem = {
+	id: string
+	status: HistoryStatus
+	mode: ToolMode
+	label: string
+	sources: string[]
+	outputFolder?: string
+	outputSegments?: string[]
+	outputRoot?: string
+	outputSize?: number
+	durationMs: number
+	completedAt: string
+	error?: string
+}
+
 const WRITE_CHUNK_SIZE = 32 * 1024 * 1024
+const HISTORY_STORAGE_KEY = "fsdecryptGUI.exportHistory"
 
 const MODES = [
 	{ mode: "container" as const, label: "Base", icon: FileArchive },
@@ -44,7 +98,8 @@ function formatBytes(bytes: number) {
 }
 
 function basename(filePath: string) {
-	return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath
+	const segments = filePath.split(/[\\/]/).filter(Boolean)
+	return segments.length > 0 ? segments[segments.length - 1] : filePath
 }
 
 function outputSegmentsForFolder(rootPath: string, folderName: string) {
@@ -104,6 +159,26 @@ function formatEta(stats: RunStats) {
 	return formatDuration((stats.totalBytes - stats.bytesWritten) / bytesPerMs)
 }
 
+function formatVersion(version: VersionLike) {
+	return `${version.major}.${version.minor.toString().padStart(2, "0")}.${version.release.toString().padStart(2, "0")}`
+}
+
+function versionKey(version: VersionLike) {
+	return `${version.major}.${version.minor}.${version.release}`
+}
+
+function appLayerLabel(layer: AppLayerInfo) {
+	if (!layer.bootId) {
+		return "Unknown APP"
+	}
+
+	return `${layer.bootId.gameId} ${formatVersion(layer.bootId.targetVersion)}`
+}
+
+function historyId() {
+	return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
 function abortError() {
 	return new DOMException("Extraction cancelled", "AbortError")
 }
@@ -116,6 +191,21 @@ function throwIfAborted(signal: AbortSignal) {
 
 function isAbortError(error: unknown) {
 	return (error instanceof DOMException && error.name === "AbortError") || (error instanceof Error && error.message === "Extraction cancelled")
+}
+
+function readStoredHistory(): ExportHistoryItem[] {
+	try {
+		const raw = localStorage.getItem(HISTORY_STORAGE_KEY)
+		if (!raw) return []
+		const parsed = JSON.parse(raw) as ExportHistoryItem[]
+		return Array.isArray(parsed) ? parsed.slice(0, 50) : []
+	} catch {
+		return []
+	}
+}
+
+function writeStoredHistory(history: ExportHistoryItem[]) {
+	localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history.slice(0, 50)))
 }
 
 function vhdDetails(result: VhdNtfsSource) {
@@ -180,6 +270,93 @@ function createFolderWriter(
 	}
 }
 
+async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<AppLayerInfo[]> {
+	const appFiles = files.filter(file => file.name.toLowerCase().endsWith(".app"))
+	const layers = await Promise.all(
+		appFiles.map(async file => {
+			try {
+				const source = await openFscryptSource(byteSourceFromPickedFile(file), { keyFile: keySource })
+				return { file, bootId: source.bootId }
+			} catch (error) {
+				return { file, error: error instanceof Error ? error.message : "Could not read APP metadata" }
+			}
+		})
+	)
+
+	return layers.map(layer => {
+		if (!layer.bootId || layer.bootId.sequenceNumber === 0) {
+			return layer
+		}
+
+		const parent = layers.find(candidate => {
+			return (
+				candidate.bootId &&
+				candidate.bootId.gameId === layer.bootId?.gameId &&
+				versionKey(candidate.bootId.targetVersion) === versionKey(layer.bootId.sourceVersion)
+			)
+		})
+
+		return { ...layer, parentFile: parent?.file }
+	})
+}
+
+async function buildMergeGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<MergeSelectionGroup[]> {
+	const rawVhds = files.filter(file => file.name.toLowerCase().endsWith(".vhd"))
+	const appLayers = await inspectAppLayers(files, keySource)
+	const groups = new Map<string, AppLayerInfo[]>()
+
+	for (const layer of appLayers) {
+		let root = layer
+		let guard = 0
+		while (root.parentFile && guard < appLayers.length) {
+			const nextRoot = appLayers.find(candidate => candidate.file.path === root.parentFile?.path)
+			if (!nextRoot) break
+			root = nextRoot
+			guard += 1
+		}
+
+		const key = root.bootId
+			? `${root.bootId.gameId}:${versionKey(root.bootId.targetVersion)}:${root.file.path}`
+			: `unknown:${root.file.path}`
+		groups.set(key, [...(groups.get(key) ?? []), layer])
+	}
+
+	const result: MergeSelectionGroup[] = [...groups.values()].map((layers, index) => {
+		const sorted = [...layers].sort((left, right) => (left.bootId?.sequenceNumber ?? 0) - (right.bootId?.sequenceNumber ?? 0))
+		const first = sorted[0]
+		const last = sorted[sorted.length - 1]
+		const missingParent = sorted.find(layer => layer.bootId && layer.bootId.sequenceNumber > 0 && !layer.parentFile)
+		const hasErrors = sorted.find(layer => layer.error)
+		const label = last?.bootId ? `${last.bootId.gameId} ${formatVersion(last.bootId.targetVersion)}` : `APP Chain ${index + 1}`
+
+		return {
+			id: sorted.map(layer => layer.file.path).join("|"),
+			label,
+			files: sorted.map(layer => layer.file),
+			appLayers: sorted,
+			rawVhds: [],
+			warning: hasErrors
+				? "Metadata read failed; extraction may still fail."
+				: missingParent
+					? `${first?.bootId?.gameId ?? "APP"} ${formatVersion(missingParent.bootId!.sourceVersion)} parent is not selected.`
+					: undefined
+		}
+	})
+
+	if (rawVhds.length > 0) {
+		result.push({
+			id: rawVhds.map(file => file.path).join("|"),
+			label: rawVhds.length === 1 ? stripExtension(rawVhds[0].name) : `Raw VHD Chain (${rawVhds.length})`,
+			files: rawVhds,
+			appLayers: [],
+			rawVhds,
+			warning: appLayers.length > 0 ? "Raw VHD files are exported as a separate chain from selected APP files." : undefined
+		})
+	}
+
+	return result
+}
+
 function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolMode) => void }) {
 	const activeIndex = MODES.findIndex(item => item.mode === mode)
 	return (
@@ -198,11 +375,133 @@ function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolM
 	)
 }
 
+function ContainerSelection({ files }: { files: PickedFile[] }) {
+	if (files.length === 0) {
+		return <div className="muted">None</div>
+	}
+
+	return (
+		<div className="selected-list">
+			{files.map((file, index) => (
+				<div className="selected-card" key={file.path}>
+					<div className="selected-card-index">{index + 1}</div>
+					<div className="selected-card-body">
+						<strong title={file.name}>{file.name}</strong>
+						<span>{formatBytes(file.size)}</span>
+					</div>
+				</div>
+			))}
+		</div>
+	)
+}
+
+function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]; isAnalyzing: boolean }) {
+	if (isAnalyzing) {
+		return <div className="muted">Reading APP chain metadata...</div>
+	}
+
+	if (groups.length === 0) {
+		return <div className="muted">None</div>
+	}
+
+	return (
+		<div className="selected-list">
+			{groups.map((group, index) => (
+				<div className="chain-card" key={group.id || index}>
+					<div className="chain-card-header">
+						<div>
+							<label>{group.rawVhds.length > 0 ? "VHD Chain" : "APP Chain"}</label>
+							<strong title={group.label}>{group.label}</strong>
+						</div>
+						<span>{group.files.length} layer{group.files.length === 1 ? "" : "s"}</span>
+					</div>
+					{group.warning && (
+						<div className="chain-warning">
+							<AlertTriangle size={14} />
+							<span>{group.warning}</span>
+						</div>
+					)}
+					<div className="chain-layers">
+						{group.appLayers.map(layer => (
+							<div className={layer.parentFile || layer.bootId?.sequenceNumber === 0 ? "chain-layer linked" : "chain-layer missing"} key={layer.file.path}>
+								{layer.bootId?.sequenceNumber === 0 ? <CircleDot size={14} /> : layer.parentFile ? <Link2 size={14} /> : <AlertTriangle size={14} />}
+								<div>
+									<strong title={layer.file.name}>{layer.file.name}</strong>
+									<span>
+										{layer.error
+											? layer.error
+											: layer.bootId?.sequenceNumber === 0
+												? `Parent layer · ${appLayerLabel(layer)}`
+												: layer.parentFile
+													? `Child layer · parent ${layer.parentFile.name}`
+													: `Child layer · missing parent ${formatVersion(layer.bootId!.sourceVersion)}`}
+									</span>
+								</div>
+							</div>
+						))}
+						{group.rawVhds.map(file => (
+							<div className="chain-layer linked" key={file.path}>
+								<HardDriveDownload size={14} />
+								<div>
+									<strong title={file.name}>{file.name}</strong>
+									<span>{formatBytes(file.size)}</span>
+								</div>
+							</div>
+						))}
+					</div>
+				</div>
+			))}
+		</div>
+	)
+}
+
+function HistoryPanel({
+	history,
+	onOpen
+}: {
+	history: ExportHistoryItem[]
+	onOpen: (item: ExportHistoryItem) => void
+}) {
+	return (
+		<div className="history-block">
+			<div className="section-title">
+				<History size={15} />
+				<span>History</span>
+			</div>
+			{history.length === 0 ? (
+				<div className="muted">No exports yet</div>
+			) : (
+				<div className="history-list">
+					{history.map(item => (
+						<div className={`history-row ${item.status}`} key={item.id}>
+							{item.status === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+							<div>
+								<strong title={item.label}>{item.label}</strong>
+								<span>
+									{item.status} · {formatDuration(item.durationMs)} · {new Date(item.completedAt).toLocaleTimeString()}
+								</span>
+							</div>
+							{item.status === "success" && item.outputRoot && item.outputSegments && (
+								<button type="button" className="icon-button" title="Open output folder" aria-label="Open output folder" onClick={() => onOpen(item)}>
+									<FolderOpen size={16} />
+								</button>
+							)}
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	)
+}
+
 export function App() {
 	const [mode, setMode] = useState<ToolMode>("container")
-	const [containerFile, setContainerFile] = useState<PickedFile | null>(null)
+	const [baseFiles, setBaseFiles] = useState<PickedFile[]>([])
+	const [optionFiles, setOptionFiles] = useState<PickedFile[]>([])
 	const [keyFile, setKeyFile] = useState<PickedFile | null>(null)
-	const [vhdFiles, setVhdFiles] = useState<PickedFile[]>([])
+	const [mergeFiles, setMergeFiles] = useState<PickedFile[]>([])
+	const [mergeGroups, setMergeGroups] = useState<MergeSelectionGroup[]>([])
+	const [isAnalyzingMerge, setIsAnalyzingMerge] = useState(false)
 	const [outputRoot, setOutputRoot] = useState("")
 	const [configPath, setConfigPath] = useState("")
 	const [isBusy, setIsBusy] = useState(false)
@@ -210,6 +509,8 @@ export function App() {
 	const [runStats, setRunStats] = useState<RunStats>({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
 	const [logs, setLogs] = useState<string[]>(["Ready"])
 	const [result, setResult] = useState<CompletedResult | null>(null)
+	const [activeJob, setActiveJob] = useState<{ index: number; total: number; label: string } | null>(null)
+	const [history, setHistory] = useState<ExportHistoryItem[]>(readStoredHistory)
 	const terminalRef = useRef<HTMLDivElement>(null)
 	const abortControllerRef = useRef<AbortController | null>(null)
 	const runStartedAtRef = useRef(0)
@@ -217,6 +518,10 @@ export function App() {
 	useEffect(() => {
 		terminalRef.current?.scrollTo({ top: terminalRef.current.scrollHeight })
 	}, [logs])
+
+	useEffect(() => {
+		writeStoredHistory(history)
+	}, [history])
 
 	useEffect(() => {
 		if (!isBusy) return
@@ -228,15 +533,27 @@ export function App() {
 		return () => window.clearInterval(interval)
 	}, [isBusy])
 
-	const selectedFiles = mode === "vhd" ? vhdFiles : containerFile ? [containerFile] : []
-	const canRun = !isBusy && Boolean(outputRoot) && (mode === "vhd" ? vhdFiles.length > 0 : Boolean(containerFile))
+	const selectedContainerFiles = mode === "option" ? optionFiles : baseFiles
+	const selectedJobCount = mode === "vhd" ? mergeGroups.length : selectedContainerFiles.length
+	const canRun = !isBusy && Boolean(outputRoot) && selectedJobCount > 0 && !isAnalyzingMerge
 	const modeLabel = MODES.find(m => m.mode === mode)!.label.toUpperCase()
 	const keySource = useMemo(() => (keyFile ? byteSourceFromPickedFile(keyFile) : undefined), [keyFile])
 	const configFolder = useMemo(() => dirname(configPath), [configPath])
 
 	const appendLog = (message: string) => {
 		const timestamp = new Date().toLocaleTimeString()
-		setLogs(current => [...current.slice(-220), `[${timestamp}] ${message}`])
+		setLogs(current => [...current.slice(-260), `[${timestamp}] ${message}`])
+	}
+
+	const addHistory = (item: Omit<ExportHistoryItem, "id" | "completedAt">) => {
+		setHistory(current => [
+			{
+				...item,
+				id: historyId(),
+				completedAt: new Date().toISOString()
+			},
+			...current
+		].slice(0, 50))
 	}
 
 	useEffect(() => {
@@ -262,7 +579,8 @@ export function App() {
 	const chooseContainer = async () => {
 		const isOption = mode === "option"
 		const files = await window.fsdecryptGUI.pickFiles({
-			title: isOption ? "Choose option" : "Choose base",
+			title: isOption ? "Choose updates" : "Choose games",
+			multiple: true,
 			filters: [
 				isOption
 					? { name: "Option containers", extensions: ["opt"] }
@@ -270,7 +588,11 @@ export function App() {
 				{ name: "All files", extensions: ["*"] }
 			]
 		})
-		setContainerFile(files[0] ?? null)
+		if (isOption) {
+			setOptionFiles(files)
+		} else {
+			setBaseFiles(files)
+		}
 		setResult(null)
 	}
 
@@ -285,6 +607,16 @@ export function App() {
 		if (!files[0]) return
 		setKeyFile(files[0])
 		await window.fsdecryptGUI.updateConfig({ keyFilePath: files[0].path })
+		if (mergeFiles.length > 0) {
+			setIsAnalyzingMerge(true)
+			try {
+				setMergeGroups(await buildMergeGroups(mergeFiles, byteSourceFromPickedFile(files[0])))
+			} catch (error) {
+				appendLog(error instanceof Error ? `Could not refresh merge selection: ${error.message}` : "Could not refresh merge selection")
+			} finally {
+				setIsAnalyzingMerge(false)
+			}
+		}
 		setResult(null)
 	}
 
@@ -297,15 +629,30 @@ export function App() {
 				{ name: "All files", extensions: ["*"] }
 			]
 		})
-		setVhdFiles(files)
+
+		setMergeFiles(files)
+		setMergeGroups([])
 		setResult(null)
+		if (files.length === 0) return
+
+		setIsAnalyzingMerge(true)
+		try {
+			setMergeGroups(await buildMergeGroups(files, keySource))
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not analyze merge selection: ${error.message}` : "Could not analyze merge selection")
+		} finally {
+			setIsAnalyzingMerge(false)
+		}
 	}
 
 	const reset = () => {
-		setContainerFile(null)
-		setVhdFiles([])
+		setBaseFiles([])
+		setOptionFiles([])
+		setMergeFiles([])
+		setMergeGroups([])
 		setProgress(0)
 		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
+		setActiveJob(null)
 		setLogs(["Ready"])
 		setResult(null)
 	}
@@ -327,9 +674,19 @@ export function App() {
 		if (!result) return
 
 		try {
-			await window.fsdecryptGUI.openOutputFolder(outputRoot, result.outputSegments)
+			await window.fsdecryptGUI.openOutputFolder(result.outputRoot, result.outputSegments)
 		} catch (error) {
 			appendLog(error instanceof Error ? `Could not open output folder: ${error.message}` : "Could not open output folder")
+		}
+	}
+
+	const openHistoryFolder = async (item: ExportHistoryItem) => {
+		if (!item.outputRoot || !item.outputSegments) return
+
+		try {
+			await window.fsdecryptGUI.openOutputFolder(item.outputRoot, item.outputSegments)
+		} catch (error) {
+			appendLog(error instanceof Error ? `Could not open history folder: ${error.message}` : "Could not open history folder")
 		}
 	}
 
@@ -357,6 +714,7 @@ export function App() {
 		return {
 			outputFolder: sanitizePathSegment(folderName),
 			outputSegments,
+			outputRoot,
 			outputSize: extracted.bytes,
 			details: [
 				...getExtraDetails(),
@@ -365,6 +723,86 @@ export function App() {
 				{ label: "Folders", value: extracted.directories.toLocaleString() }
 			]
 		}
+	}
+
+	const runBaseExport = async (
+		file: PickedFile,
+		elapsedDetails: () => CompletedResult["details"],
+		signal: AbortSignal,
+		onBytesWritten: (bytes: number) => void
+	) => {
+		throwIfAborted(signal)
+		appendLog(`Opening APP container ${file.name}`)
+		const vhdSource = await extractInternalVhdSource(byteSourceFromPickedFile(file), {
+			keyFile: keySource,
+			onLog: appendLog
+		})
+		throwIfAborted(signal)
+		const ntfsSource = await openVhdChainNtfsSource([vhdSource], { onLog: appendLog })
+		return extractNtfsSource(ntfsSource, stripExtension(file.name), elapsedDetails, signal, onBytesWritten)
+	}
+
+	const runOptionExport = async (
+		file: PickedFile,
+		elapsedDetails: () => CompletedResult["details"],
+		signal: AbortSignal,
+		onBytesWritten: (bytes: number) => void
+	) => {
+		throwIfAborted(signal)
+		const exfatSource = await openFscryptSource(byteSourceFromPickedFile(file), {
+			expectedContainerType: FSCRYPT_CONTAINER_TYPE.OPTION,
+			keyFile: keySource,
+			onLog: appendLog
+		})
+		const folderName = stripExtension(exfatSource.outputFilename)
+		const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
+		let totalBytes = exfatSource.size
+		setRunStats(current => ({ ...current, totalBytes }))
+		if (outputSegments.length > 0) {
+			await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
+		}
+		const writer = createFolderWriter(outputRoot, folderName, () => totalBytes, setProgress, signal, onBytesWritten)
+		const extracted = await extractExfatContents(exfatSource, writer, {
+			onLog: appendLog,
+			onTotalBytes: bytes => {
+				totalBytes = bytes
+				setRunStats(current => ({ ...current, totalBytes: bytes }))
+			},
+			signal
+		})
+		return {
+			outputFolder: sanitizePathSegment(folderName),
+			outputSegments,
+			outputRoot,
+			outputSize: extracted.bytes,
+			details: [
+				...elapsedDetails(),
+				{ label: "Type", value: describeContainerType(exfatSource.bootId.containerType) },
+				{ label: "Game", value: exfatSource.bootId.gameId },
+				{ label: "Option", value: exfatSource.bootId.targetOption },
+				{ label: "Files", value: extracted.files.toLocaleString() },
+				{ label: "Folders", value: extracted.directories.toLocaleString() }
+			]
+		}
+	}
+
+	const runMergeExport = async (
+		group: MergeSelectionGroup,
+		elapsedDetails: () => CompletedResult["details"],
+		signal: AbortSignal,
+		onBytesWritten: (bytes: number) => void
+	) => {
+		throwIfAborted(signal)
+		const appFiles = group.files.filter(file => file.name.toLowerCase().endsWith(".app"))
+		const rawVhdFiles = group.files.filter(file => !file.name.toLowerCase().endsWith(".app"))
+		const appVhds =
+			appFiles.length > 0
+				? await appContainersToVhdSources(appFiles.map(byteSourceFromPickedFile), { keyFile: keySource, onLog: appendLog })
+				: []
+		throwIfAborted(signal)
+		const ntfsSource = await openVhdChainNtfsSource([...rawVhdFiles.map(byteSourceFromPickedFile), ...appVhds], { onLog: appendLog })
+		const topName = group.files.length > 0 ? group.files[group.files.length - 1].name : ntfsSource.name
+		return extractNtfsSource(ntfsSource, stripExtension(topName), elapsedDetails, signal, onBytesWritten)
 	}
 
 	const run = async () => {
@@ -376,6 +814,7 @@ export function App() {
 		setIsBusy(true)
 		setProgress(0)
 		setRunStats({ elapsedMs: 0, bytesWritten: 0, totalBytes: 0 })
+		setActiveJob(null)
 		setLogs([])
 		setResult(null)
 
@@ -392,72 +831,73 @@ export function App() {
 			}))
 		}
 
-		try {
-			appendLog(`Starting ${modeLabel} extract`)
+		const jobs =
+			mode === "vhd"
+				? mergeGroups.map(group => ({
+						label: group.label,
+						sources: group.files.map(file => file.name),
+						run: () => runMergeExport(group, elapsedDetails, abortController.signal, noteBytesWritten)
+					}))
+				: selectedContainerFiles.map(file => ({
+						label: stripExtension(file.name),
+						sources: [file.name],
+						run: () =>
+							mode === "option"
+								? runOptionExport(file, elapsedDetails, abortController.signal, noteBytesWritten)
+								: runBaseExport(file, elapsedDetails, abortController.signal, noteBytesWritten)
+					}))
 
-			if (mode === "container") {
-				if (!containerFile) return
-				throwIfAborted(abortController.signal)
-				appendLog(`Opening APP container ${containerFile.name}`)
-				const vhdSource = await extractInternalVhdSource(byteSourceFromPickedFile(containerFile), {
-					keyFile: keySource,
-					onLog: appendLog
-				})
-				throwIfAborted(abortController.signal)
-				const ntfsSource = await openVhdChainNtfsSource([vhdSource], { onLog: appendLog })
-				setResult(await extractNtfsSource(ntfsSource, stripExtension(containerFile.name), elapsedDetails, abortController.signal, noteBytesWritten))
-			} else if (mode === "option") {
-				if (!containerFile) return
-				throwIfAborted(abortController.signal)
-				const exfatSource = await openFscryptSource(byteSourceFromPickedFile(containerFile), {
-					expectedContainerType: FSCRYPT_CONTAINER_TYPE.OPTION,
-					keyFile: keySource,
-					onLog: appendLog
-				})
-				const folderName = stripExtension(exfatSource.outputFilename)
-				const outputSegments = outputSegmentsForFolder(outputRoot, folderName)
-				let totalBytes = exfatSource.size
-				setRunStats(current => ({ ...current, totalBytes }))
-				if (outputSegments.length > 0) {
-					await window.fsdecryptGUI.prepareOutputFolder(outputRoot, outputSegments)
+		try {
+			appendLog(`Starting ${modeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
+
+			for (let index = 0; index < jobs.length; index++) {
+				const job = jobs[index]
+				const jobStartedAt = performance.now()
+				setProgress(0)
+				setActiveJob({ index: index + 1, total: jobs.length, label: job.label })
+				appendLog(`[${index + 1}/${jobs.length}] Exporting ${job.label}`)
+
+				try {
+					const nextResult = await job.run()
+					setResult(nextResult)
+					setProgress(100)
+					addHistory({
+						status: "success",
+						mode,
+						label: job.label,
+						sources: job.sources,
+						outputFolder: nextResult.outputFolder,
+						outputSegments: nextResult.outputSegments,
+						outputRoot: nextResult.outputRoot,
+						outputSize: nextResult.outputSize,
+						durationMs: performance.now() - jobStartedAt
+					})
+				} catch (error) {
+					if (isAbortError(error)) {
+						addHistory({
+							status: "cancelled",
+							mode,
+							label: job.label,
+							sources: job.sources,
+							durationMs: performance.now() - jobStartedAt,
+							error: "Cancelled"
+						})
+						throw error
+					}
+
+					const message = error instanceof Error ? error.message : "fsdecrypt failed"
+					appendLog(`ERROR: ${job.label}: ${message}`)
+					addHistory({
+						status: "failed",
+						mode,
+						label: job.label,
+						sources: job.sources,
+						durationMs: performance.now() - jobStartedAt,
+						error: message
+					})
 				}
-				const writer = createFolderWriter(outputRoot, folderName, () => totalBytes, setProgress, abortController.signal, noteBytesWritten)
-				const extracted = await extractExfatContents(exfatSource, writer, {
-					onLog: appendLog,
-					onTotalBytes: bytes => {
-						totalBytes = bytes
-						setRunStats(current => ({ ...current, totalBytes: bytes }))
-					},
-					signal: abortController.signal
-				})
-				setResult({
-					outputFolder: sanitizePathSegment(folderName),
-					outputSegments,
-					outputSize: extracted.bytes,
-					details: [
-						...elapsedDetails(),
-						{ label: "Type", value: describeContainerType(exfatSource.bootId.containerType) },
-						{ label: "Game", value: exfatSource.bootId.gameId },
-						{ label: "Option", value: exfatSource.bootId.targetOption },
-						{ label: "Files", value: extracted.files.toLocaleString() },
-						{ label: "Folders", value: extracted.directories.toLocaleString() }
-					]
-				})
-			} else {
-				throwIfAborted(abortController.signal)
-				const appFiles = vhdFiles.filter(f => f.name.toLowerCase().endsWith(".app"))
-				const rawVhdFiles = vhdFiles.filter(f => !f.name.toLowerCase().endsWith(".app"))
-				const appVhds =
-					appFiles.length > 0
-						? await appContainersToVhdSources(appFiles.map(byteSourceFromPickedFile), { keyFile: keySource, onLog: appendLog })
-						: []
-				throwIfAborted(abortController.signal)
-				const ntfsSource = await openVhdChainNtfsSource([...rawVhdFiles.map(byteSourceFromPickedFile), ...appVhds], { onLog: appendLog })
-				const topName = appFiles.at(-1)?.name ?? rawVhdFiles.at(-1)?.name ?? ntfsSource.name
-				setResult(await extractNtfsSource(ntfsSource, stripExtension(topName), elapsedDetails, abortController.signal, noteBytesWritten))
 			}
 
-			setProgress(100)
 			appendLog("Done")
 		} catch (error) {
 			console.error(error)
@@ -470,6 +910,7 @@ export function App() {
 		} finally {
 			abortControllerRef.current = null
 			setIsBusy(false)
+			setActiveJob(null)
 		}
 	}
 
@@ -483,7 +924,7 @@ export function App() {
 				<div className="actions">
 					<button type="button" className="primary" disabled={!canRun} onClick={run}>
 						<Zap size={16} />
-						Extract
+						Extract {selectedJobCount > 1 ? selectedJobCount : ""}
 					</button>
 					{isBusy ? (
 						<button type="button" onClick={cancelRun}>
@@ -511,7 +952,7 @@ export function App() {
 					) : (
 						<button type="button" className="wide-button" disabled={isBusy} onClick={chooseContainer}>
 							<FileArchive size={17} />
-							{mode === "option" ? "Choose Options" : "Choose Base"}
+							{mode === "option" ? "Choose Updates" : "Choose Games"}
 						</button>
 					)}
 					<button type="button" className="wide-button" disabled={isBusy} onClick={chooseKey}>
@@ -519,18 +960,9 @@ export function App() {
 						Choose Key
 					</button>
 
-					<div className="info-block">
+					<div className="info-block selected-block">
 						<label>Selected</label>
-						{selectedFiles.length === 0 ? (
-							<div className="muted">None</div>
-						) : (
-							selectedFiles.map(file => (
-								<div className="file-row" key={file.path}>
-									<strong>{file.name}</strong>
-									<span>{formatBytes(file.size)}</span>
-								</div>
-							))
-						)}
+						{mode === "vhd" ? <MergeSelection groups={mergeGroups} isAnalyzing={isAnalyzingMerge} /> : <ContainerSelection files={selectedContainerFiles} />}
 						<hr />
 						<label>Key</label>
 						<strong className="truncate">{keyFile?.name ?? "Built-in"}</strong>
@@ -555,6 +987,8 @@ export function App() {
 							</button>
 						</div>
 					</div>
+
+					<HistoryPanel history={history} onOpen={openHistoryFolder} />
 				</section>
 
 				<section className="main-panel">
@@ -564,8 +998,8 @@ export function App() {
 							<strong>{modeLabel}</strong>
 						</div>
 						<div>
-							<label>Files</label>
-							<strong>{selectedFiles.length}</strong>
+							<label>Jobs</label>
+							<strong>{selectedJobCount}</strong>
 						</div>
 						<div>
 							<label>Output</label>
@@ -589,7 +1023,7 @@ export function App() {
 					{(isBusy || progress > 0) && (
 						<div className="progress-block">
 							<div>
-								<span>Progress</span>
+								<span>{activeJob ? `${activeJob.index}/${activeJob.total} ${activeJob.label}` : "Progress"}</span>
 								<strong>{progress}%</strong>
 							</div>
 							<progress value={progress} max={100} />

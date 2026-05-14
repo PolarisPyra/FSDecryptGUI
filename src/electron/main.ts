@@ -283,10 +283,10 @@ function installMenu() {
 
 async function createWindow() {
 	const window = new BrowserWindow({
-		width: 1240,
-		height: 820,
-		minWidth: 920,
-		minHeight: 620,
+		width: 1480,
+		height: 960,
+		minWidth: 1100,
+		minHeight: 720,
 		title: "fsdecryptGUI",
 		backgroundColor: "#101418",
 		webPreferences: {
