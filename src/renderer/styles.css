@@ -455,10 +455,18 @@ progress::-webkit-progress-value {
 .section-title {
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	gap: 0.45rem;
 	margin-bottom: 0.75rem;
 	color: #d5dde5;
 	font-weight: 750;
+}
+
+.section-title > div {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
 }
 
 .history-list {

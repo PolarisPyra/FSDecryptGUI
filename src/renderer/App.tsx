@@ -12,6 +12,7 @@ import {
 	Link2,
 	RotateCcw,
 	Terminal,
+	Trash2,
 	X,
 	Zap
 } from "lucide-react"
@@ -457,16 +458,30 @@ function MergeSelection({ groups, isAnalyzing }: { groups: MergeSelectionGroup[]
 
 function HistoryPanel({
 	history,
-	onOpen
+	onOpen,
+	onClear
 }: {
 	history: ExportHistoryItem[]
 	onOpen: (item: ExportHistoryItem) => void
+	onClear: () => void
 }) {
 	return (
 		<div className="history-block">
 			<div className="section-title">
-				<History size={15} />
-				<span>History</span>
+				<div>
+					<History size={15} />
+					<span>History</span>
+				</div>
+				<button
+					type="button"
+					className="icon-button"
+					disabled={history.length === 0}
+					title="Clear history"
+					aria-label="Clear history"
+					onClick={onClear}
+				>
+					<Trash2 size={15} />
+				</button>
 			</div>
 			{history.length === 0 ? (
 				<div className="muted">No exports yet</div>
@@ -554,6 +569,10 @@ export function App() {
 			},
 			...current
 		].slice(0, 50))
+	}
+
+	const clearHistory = () => {
+		setHistory([])
 	}
 
 	useEffect(() => {
@@ -988,7 +1007,7 @@ export function App() {
 						</div>
 					</div>
 
-					<HistoryPanel history={history} onOpen={openHistoryFolder} />
+					<HistoryPanel history={history} onOpen={openHistoryFolder} onClear={clearHistory} />
 				</section>
 
 				<section className="main-panel">
