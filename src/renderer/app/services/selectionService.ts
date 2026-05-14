@@ -1,4 +1,5 @@
 import type { ReadableByteSource } from "../../../fsdecrypt/byte-source"
+import type { VhdLayerInfo } from "../../../fsdecrypt/vhd"
 import type { NtfsExtractionWriter } from "../../../fsdecrypt/ntfs"
 import { formatBytes, formatVersion } from "../../base/common/format"
 import { stripExtension } from "../../base/common/path"
@@ -128,6 +129,31 @@ export function optionLayerDetail(layer: OptionLayerInfo, allVhds: OptionVhdLaye
 	return `${firstVhd.diskType} · ${firstVhd.name}`
 }
 
+function rawVhdWarning(layers: VhdLayerInfo[]) {
+	const bases = layers.filter(layer => layer.diskType !== "differencing/child")
+	if (bases.length === 0) {
+		return "VHD Chain is missing its Parent Layer."
+	}
+
+	if (bases.length > 1) {
+		return "VHD Chain has multiple base layers."
+	}
+
+	let currentId = bases[0].ownId
+	const remaining = layers.filter(layer => layer.ownId !== currentId)
+	while (remaining.length > 0) {
+		const nextIndex = remaining.findIndex(layer => layer.parentId === currentId)
+		if (nextIndex === -1) {
+			return "VHD Chain is missing an intermediate Parent Layer."
+		}
+
+		const [next] = remaining.splice(nextIndex, 1)
+		currentId = next.ownId
+	}
+
+	return undefined
+}
+
 async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<AppLayerInfo[]> {
 	const appFiles = files.filter(file => file.name.toLowerCase().endsWith(".app"))
 	const { openFscryptSource } = await import("../../../fsdecrypt/fsdecrypt")
@@ -208,17 +234,29 @@ export async function buildMergeGroups(files: PickedFile[], keySource: ReadableB
 	})
 
 	if (rawVhds.length > 0) {
+		const rawVhdLayers = await inspectRawVhdLayers(rawVhds)
 		result.push({
 			id: rawVhds.map(file => file.path).join("|"),
 			label: rawVhds.length === 1 ? stripExtension(rawVhds[0].name) : `Raw VHD Chain (${rawVhds.length})`,
 			files: rawVhds,
 			appLayers: [],
 			rawVhds,
-			warning: appLayers.length > 0 ? "Raw VHD files are exported as a separate chain from selected APP files." : undefined
+			warning: rawVhdLayers.warning,
+			notice: appLayers.length > 0 ? "Raw VHD Layers will be extracted separately from selected APPs." : undefined
 		})
 	}
 
 	return result
+}
+
+async function inspectRawVhdLayers(rawVhds: PickedFile[]) {
+	const { inspectVhdLayers } = await import("../../../fsdecrypt/vhd")
+	try {
+		const layers = await inspectVhdLayers(rawVhds.map(file => byteSourceFromPickedFile(file)))
+		return { warning: rawVhdWarning(layers) }
+	} catch (error) {
+		return { warning: error instanceof Error ? error.message : "Could not read VHD Chain metadata." }
+	}
 }
 
 export async function buildBaseGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<BaseSelectionGroup[]> {

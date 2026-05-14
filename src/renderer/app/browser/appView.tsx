@@ -11,6 +11,7 @@ import {
 	FolderPlus,
 	HardDriveDownload,
 	History,
+	Info,
 	Link2,
 	RotateCcw,
 	Save,
@@ -94,6 +95,12 @@ function MergeSelection({
 						<div className="chain-warning">
 							<AlertTriangle size={14} />
 							<span>{group.warning}</span>
+						</div>
+					)}
+					{group.notice && (
+						<div className="chain-notice">
+							<Info size={14} />
+							<span>{group.notice}</span>
 						</div>
 					)}
 					<div className="chain-layers">
@@ -183,6 +190,12 @@ function OptionSelection({
 						<div className="chain-warning">
 							<AlertTriangle size={14} />
 							<span>{group.warning}</span>
+						</div>
+					)}
+					{group.notice && (
+						<div className="chain-notice">
+							<Info size={14} />
+							<span>{group.notice}</span>
 						</div>
 					)}
 					<div className="chain-layers">
@@ -389,7 +402,7 @@ export function AppView(props: AppViewProps) {
 							)}
 						</div>
 						<hr />
-						<label>Output Root</label>
+						<label>Output Folder</label>
 						<div className="path-action-row has-two-actions">
 							<strong className="truncate" title={props.outputRoot || "File > Select Output Folder"}>
 								{props.outputRoot ? basename(props.outputRoot) : "File > Select Output Folder"}

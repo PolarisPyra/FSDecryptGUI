@@ -57,6 +57,7 @@ export type OptionSelectionGroup = {
 	files: PickedFile[]
 	optionLayers: OptionLayerInfo[]
 	warning?: string
+	notice?: string
 }
 
 export type VersionLike = {
@@ -80,6 +81,7 @@ export type MergeSelectionGroup = {
 	appLayers: AppLayerInfo[]
 	rawVhds: PickedFile[]
 	warning?: string
+	notice?: string
 }
 
 export type BaseSelectionGroup = MergeSelectionGroup & {
