@@ -5,6 +5,7 @@ import type { PickedFile } from "../../electron-api"
 
 export type ToolMode = "container" | "option" | "vhd"
 export type HistoryStatus = "success" | "failed" | "cancelled"
+export type ThemeMode = "dark" | "light"
 
 export type CompletedResult = {
 	outputFolder: string

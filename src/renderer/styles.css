@@ -10,6 +10,7 @@
 		Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	color: #fbfbfb;
 	background: #070707;
+	color-scheme: dark;
 	font-synthesis: none;
 	text-rendering: geometricPrecision;
 	--app-bg: #070707;
@@ -22,11 +23,25 @@
 	--app-text: #fbfbfb;
 	--app-text-muted: rgba(251, 251, 251, 0.6);
 	--app-text-faint: rgba(251, 251, 251, 0.42);
+	--app-divider: rgba(255, 255, 255, 0.08);
+	--app-control: rgba(255, 255, 255, 0.07);
+	--app-control-hover: rgba(255, 255, 255, 0.11);
+	--app-control-strong: rgba(255, 255, 255, 0.08);
+	--app-layer-bg: rgba(0, 0, 0, 0.22);
+	--app-accent: #b7f2d0;
+	--app-accent-hover: #c8ffe0;
+	--app-accent-foreground: #060807;
 	--app-success: #d9ffe8;
+	--app-success-strong: #8fd7b3;
 	--app-success-soft: rgba(143, 215, 179, 0.18);
 	--app-warning: #f0c674;
 	--app-danger: #ff8a80;
+	--app-danger-soft: rgba(255, 138, 128, 0.07);
+	--app-danger-border: rgba(255, 138, 128, 0.28);
 	--app-info: #8ecae6;
+	--app-neutral-icon: #91a0ad;
+	--app-terminal-bg: #030404;
+	--app-terminal-fg: #7df1a2;
 	--background:
 		oklch(1 0 0);
 	--foreground:
@@ -93,9 +108,44 @@
 		oklch(0.708 0 0);
 }
 
+[data-app-theme="light"] {
+	color: #17212b;
+	background: #f5f7fa;
+	color-scheme: light;
+	--app-bg: #f5f7fa;
+	--app-bg-elevated: #ffffff;
+	--app-panel: #ffffff;
+	--app-panel-soft: rgba(23, 33, 43, 0.045);
+	--app-panel-strong: rgba(255, 255, 255, 0.88);
+	--app-border: rgba(60, 74, 89, 0.18);
+	--app-border-bright: rgba(43, 58, 75, 0.34);
+	--app-text: #17212b;
+	--app-text-muted: rgba(23, 33, 43, 0.64);
+	--app-text-faint: rgba(23, 33, 43, 0.46);
+	--app-divider: rgba(31, 45, 61, 0.11);
+	--app-control: rgba(31, 45, 61, 0.055);
+	--app-control-hover: rgba(31, 45, 61, 0.095);
+	--app-control-strong: rgba(31, 45, 61, 0.09);
+	--app-layer-bg: rgba(31, 45, 61, 0.055);
+	--app-accent: #167a4a;
+	--app-accent-hover: #12643d;
+	--app-accent-foreground: #ffffff;
+	--app-success: #0f6f43;
+	--app-success-strong: #167a4a;
+	--app-success-soft: rgba(22, 122, 74, 0.13);
+	--app-warning: #956900;
+	--app-danger: #ba3028;
+	--app-danger-soft: rgba(186, 48, 40, 0.075);
+	--app-danger-border: rgba(186, 48, 40, 0.3);
+	--app-info: #256d8e;
+	--app-neutral-icon: #6a7684;
+	--app-terminal-bg: #f8fbff;
+	--app-terminal-fg: #000000;
+}
+
 * {
 	box-sizing: border-box;
-	scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+	scrollbar-color: var(--app-border-bright) transparent;
 	scrollbar-width: thin;
 }
 
@@ -111,12 +161,12 @@
 *::-webkit-scrollbar-thumb {
 	border: 2px solid transparent;
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.24);
+	background: var(--app-border-bright);
 	background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-	background: rgba(255, 255, 255, 0.34);
+	background: var(--app-text-faint);
 	background-clip: padding-box;
 }
 
@@ -145,7 +195,7 @@ button:not([data-slot="button"]) {
 	border-radius: 10px;
 	padding: 0 0.9rem;
 	color: var(--app-text);
-	background: rgba(255, 255, 255, 0.07);
+	background: var(--app-control);
 	font: inherit;
 	font-size: 0.9rem;
 	font-weight: 600;
@@ -157,8 +207,8 @@ button:not([data-slot="button"]) {
 }
 
 button:not([data-slot="button"]):hover:not(:disabled) {
-	border-color: rgba(255, 255, 255, 0.2);
-	background: rgba(255, 255, 255, 0.11);
+	border-color: var(--app-border-bright);
+	background: var(--app-control-hover);
 }
 
 button:not([data-slot="button"]):disabled {
@@ -169,13 +219,13 @@ button:not([data-slot="button"]):disabled {
 button.primary:not([data-slot="button"]) {
 	width: 11.25rem;
 	white-space: nowrap;
-	color: #060807;
-	background: #b7f2d0;
-	border-color: #b7f2d0;
+	color: var(--app-accent-foreground);
+	background: var(--app-accent);
+	border-color: var(--app-accent);
 }
 
 button.primary:not([data-slot="button"]):hover:not(:disabled) {
-	background: #c8ffe0;
+	background: var(--app-accent-hover);
 }
 
 label {
@@ -198,7 +248,7 @@ strong {
 
 hr {
 	border: 0;
-	border-top: 1px solid rgba(255, 255, 255, 0.07);
+	border-top: 1px solid var(--app-divider);
 	margin: 0.85rem 0;
 }
 
@@ -224,7 +274,7 @@ hr {
 	justify-content: space-between;
 	gap: 1rem;
 	padding: 1.1rem 1.3rem;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	border-bottom: 1px solid var(--app-divider);
 	background: var(--app-bg);
 }
 
@@ -243,18 +293,38 @@ hr {
 .actions {
 	display: flex;
 	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 0.7rem;
+}
+
+.run-actions,
+.utility-actions {
+	display: inline-flex;
+	align-items: center;
 	gap: 0.55rem;
+}
+
+button.theme-toggle:not([data-slot="button"]) {
+	color: var(--app-text);
+	background: var(--app-panel-soft);
+}
+
+button.theme-toggle:not([data-slot="button"])[aria-pressed="true"] {
+	border-color: color-mix(in srgb, var(--app-accent) 58%, var(--app-border));
+	background: var(--app-success-soft);
 }
 
 .run-all-toggle {
 	display: inline-flex;
 	align-items: center;
 	gap: 0.45rem;
-	height: 2.4rem;
+	height: 2.5rem;
+	margin-bottom: 0;
 	padding: 0 0.72rem 0 0.55rem;
 	border: 1px solid var(--app-border);
 	border-radius: 8px;
-	background: rgba(255, 255, 255, 0.045);
+	background: var(--app-panel-soft);
 	color: var(--app-text-muted);
 	font-size: 0.76rem;
 	font-weight: 600;
@@ -275,9 +345,9 @@ hr {
 	position: relative;
 	width: 2.05rem;
 	height: 1.12rem;
-	border: 1px solid rgba(255, 255, 255, 0.16);
+	border: 1px solid var(--app-border-bright);
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--app-control-strong);
 	transition: background 180ms ease, border-color 180ms ease;
 }
 
@@ -299,13 +369,13 @@ hr {
 }
 
 .run-all-toggle.active .run-all-switch {
-	border-color: #b7f2d0;
-	background: #b7f2d0;
+	border-color: var(--app-accent);
+	background: var(--app-accent);
 }
 
 .run-all-toggle.active .run-all-switch::after {
 	left: calc(100% - 0.9rem);
-	background: #070707;
+	background: var(--app-accent-foreground);
 }
 
 .run-all-toggle.disabled {
@@ -367,7 +437,7 @@ hr {
 	padding: var(--mode-toggle-padding);
 	border: 1px solid var(--app-border);
 	border-radius: 10px;
-	background: rgba(255, 255, 255, 0.045);
+	background: var(--app-panel-soft);
 	overflow: hidden;
 }
 
@@ -389,7 +459,7 @@ hr {
 
 .mode-toggle button.active {
 	background: transparent;
-	color: #070707;
+	color: var(--app-accent-foreground);
 }
 
 .mode-toggle button:hover:not(:disabled) {
@@ -415,7 +485,7 @@ hr {
 	left: calc(var(--mode-toggle-padding) + (var(--active-index, 0) * (var(--mode-toggle-item) + var(--mode-toggle-gap))));
 	width: var(--mode-toggle-item);
 	border-radius: 8px;
-	background: #b7f2d0;
+	background: var(--app-accent);
 	transition: left 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -456,7 +526,7 @@ hr {
 .history-row {
 	border: 1px solid var(--app-border);
 	border-radius: 10px;
-	background: rgba(255, 255, 255, 0.045);
+	background: var(--app-panel-soft);
 }
 
 .selected-card {
@@ -474,7 +544,7 @@ hr {
 	width: 1.6rem;
 	height: 1.6rem;
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--app-control-strong);
 	color: var(--app-text-muted);
 	font-size: 0.72rem;
 	font-weight: 800;
@@ -544,12 +614,12 @@ hr {
 	align-items: start;
 	padding: 0.5rem;
 	border-radius: 8px;
-	background: rgba(0, 0, 0, 0.22);
+	background: var(--app-layer-bg);
 }
 
 .chain-layer.linked > svg,
 .history-row.success svg {
-	color: #8fd7b3;
+	color: var(--app-success-strong);
 }
 
 .chain-layer > svg {
@@ -563,8 +633,8 @@ hr {
 }
 
 .chain-layer.missing {
-	border: 1px solid rgba(255, 138, 128, 0.28);
-	background: rgba(255, 138, 128, 0.07);
+	border: 1px solid var(--app-danger-border);
+	background: var(--app-danger-soft);
 }
 
 button.remove-selection-button:not([data-slot="button"]) {
@@ -594,7 +664,7 @@ button.remove-selection-button:not([data-slot="button"]) svg {
 
 button.remove-selection-button:not([data-slot="button"]):hover:not(:disabled) {
 	color: var(--app-text);
-	background: rgba(255, 255, 255, 0.09);
+	background: var(--app-control-hover);
 	border-color: var(--app-border-bright);
 }
 
@@ -604,7 +674,7 @@ button.remove-selection-button:not([data-slot="button"]):hover:not(:disabled) {
 	margin-top: 0.55rem;
 	border-radius: 10px;
 	color: var(--app-text);
-	background: rgba(255, 255, 255, 0.075);
+	background: var(--app-control);
 	border-color: var(--app-border);
 }
 
@@ -643,26 +713,26 @@ button.remove-selection-button:not([data-slot="button"]):hover:not(:disabled) {
 	padding: 0.55rem;
 	border: 1px solid var(--app-border);
 	border-radius: 10px;
-	background: rgba(255, 255, 255, 0.045);
+	background: var(--app-panel-soft);
 }
 
 .key-status > svg {
 	flex: 0 0 auto;
 	margin-top: 0.15rem;
-	color: #8fd7b3;
+	color: var(--app-success-strong);
 }
 
 .key-status.invalid {
-	border-color: rgba(255, 138, 128, 0.36);
-	background: rgba(255, 138, 128, 0.07);
+	border-color: var(--app-danger-border);
+	background: var(--app-danger-soft);
 }
 
 .key-status.invalid > svg {
-	color: #ff8a80;
+	color: var(--app-danger);
 }
 
 .key-status.builtin > svg {
-	color: #91a0ad;
+	color: var(--app-neutral-icon);
 }
 
 .key-status span {
@@ -686,7 +756,7 @@ button.remove-selection-button:not([data-slot="button"]):hover:not(:disabled) {
 	padding: 0.1rem 0.4rem;
 	border: 1px solid var(--app-border);
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.07);
+	background: var(--app-control);
 	color: var(--app-text-muted);
 	font-size: 0.68rem;
 	font-weight: 750;
@@ -719,12 +789,12 @@ button.icon-button:not([data-slot="button"]) svg {
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 1rem;
 	padding: 1rem;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+	border-bottom: 1px solid var(--app-divider);
 }
 
 .progress-block {
 	padding: 1rem;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+	border-bottom: 1px solid var(--app-divider);
 }
 
 .progress-block > div {
@@ -741,15 +811,15 @@ progress {
 	overflow: hidden;
 	border: 0;
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--app-control-strong);
 }
 
 progress::-webkit-progress-bar {
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--app-control-strong);
 }
 
 progress::-webkit-progress-value {
-	background: #b7f2d0;
+	background: var(--app-accent);
 }
 
 .stats-grid {
@@ -823,7 +893,7 @@ progress::-webkit-progress-value {
 	justify-content: space-between;
 	gap: 0.45rem;
 	padding: 0.75rem 0.9rem;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+	border-bottom: 1px solid var(--app-divider);
 	font-weight: 700;
 }
 
@@ -841,8 +911,8 @@ progress::-webkit-progress-value {
 	min-height: 0;
 	overflow: auto;
 	padding: 0.75rem;
-	background: #030404;
-	color: #7df1a2;
+	background: var(--app-terminal-bg);
+	color: var(--app-terminal-fg);
 	font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, monospace;
 	font-size: 0.78rem;
 	line-height: 1.45;

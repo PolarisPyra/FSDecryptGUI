@@ -11,6 +11,7 @@ import type {
 	CompletedResult,
 	ExportHistoryItem,
 	RunStats,
+	ThemeMode,
 	ToolMode
 } from "./app/common/appTypes"
 import { runExtractionBatch } from "./app/services/extractionBatch"
@@ -36,7 +37,14 @@ function activeSelectionAnalysis(mode?: ToolMode): Record<ToolMode, boolean> {
 	return { ...idleSelectionAnalysis(), [mode]: true }
 }
 
+const THEME_STORAGE_KEY = "fsdecryptGUI.theme"
+
+function readStoredTheme(): ThemeMode {
+	return localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark"
+}
+
 export function App() {
+	const [theme, setTheme] = useState<ThemeMode>(readStoredTheme)
 	const [mode, setMode] = useState<ToolMode>("container")
 	const [inputRoot, setInputRoot] = useState("")
 	const [queues, setQueues] = useState<SelectionQueues>(emptySelectionQueues)
@@ -63,6 +71,12 @@ export function App() {
 	useEffect(() => {
 		writeStoredHistory(history)
 	}, [history])
+
+	useEffect(() => {
+		document.documentElement.dataset.appTheme = theme
+		document.documentElement.classList.toggle("dark", theme === "dark")
+		localStorage.setItem(THEME_STORAGE_KEY, theme)
+	}, [theme])
 
 	useEffect(() => {
 		if (!isBusy) return
@@ -506,6 +520,7 @@ export function App() {
 	return (
 		<AppView
 			mode={mode}
+			theme={theme}
 			modeLabel={modeLabel}
 			isBusy={isBusy}
 			canRun={canRun}
@@ -537,6 +552,7 @@ export function App() {
 				setMode(next)
 				setResult(null)
 			}}
+			onToggleTheme={() => setTheme(current => (current === "dark" ? "light" : "dark"))}
 			onRun={run}
 			onCancelRun={cancelRun}
 			onReset={reset}

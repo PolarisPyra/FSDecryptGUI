@@ -14,8 +14,10 @@ import {
 	History,
 	Info,
 	Link2,
+	Moon,
 	RotateCcw,
 	Save,
+	Sun,
 	Terminal,
 	Trash2,
 	X,
@@ -35,6 +37,7 @@ import type {
 	MergeSelectionGroup,
 	OptionSelectionGroup,
 	RunStats,
+	ThemeMode,
 	ToolMode
 } from "../common/appTypes"
 
@@ -280,6 +283,7 @@ function HistoryPanel({
 
 export type AppViewProps = {
 	mode: ToolMode
+	theme: ThemeMode
 	modeLabel: string
 	isBusy: boolean
 	canRun: boolean
@@ -308,6 +312,7 @@ export type AppViewProps = {
 	logs: string[]
 	terminalRef: RefObject<HTMLDivElement | null>
 	onModeChange: (mode: ToolMode) => void
+	onToggleTheme: () => void
 	onRun: () => void
 	onCancelRun: () => void
 	onReset: () => void
@@ -331,6 +336,8 @@ export type AppViewProps = {
 }
 
 export function AppView(props: AppViewProps) {
+	const ThemeIcon = props.theme === "dark" ? Sun : Moon
+	const nextTheme = props.theme === "dark" ? "light" : "dark"
 	return (
 		<div className="app-shell">
 			<header className="titlebar">
@@ -339,33 +346,47 @@ export function AppView(props: AppViewProps) {
 					<p>Extract APP, Option, and VHD chain contents to a local folder.</p>
 				</div>
 				<div className="actions">
-					{props.hasMultipleModeJobs && (
-						<label className={`run-all-toggle ${props.runAllModes ? "active" : ""} ${props.isBusy ? "disabled" : ""}`}>
-							<input
-								type="checkbox"
-								checked={props.runAllModes}
-								disabled={props.isBusy}
-								onChange={event => props.onRunAllModesChange(event.currentTarget.checked)}
-							/>
-							<span className="run-all-switch" aria-hidden="true" />
-							<span>All</span>
-						</label>
-					)}
-					<button type="button" className="primary" disabled={!props.canRun} onClick={props.onRun}>
-						<Zap size={16} />
-						{props.runButtonLabel}
-					</button>
-					{props.isBusy ? (
-						<button type="button" onClick={props.onCancelRun}>
-							<X size={16} />
-							Cancel
+					<div className="run-actions">
+						{props.hasMultipleModeJobs && (
+							<label className={`run-all-toggle ${props.runAllModes ? "active" : ""} ${props.isBusy ? "disabled" : ""}`}>
+								<input
+									type="checkbox"
+									checked={props.runAllModes}
+									disabled={props.isBusy}
+									onChange={event => props.onRunAllModesChange(event.currentTarget.checked)}
+								/>
+								<span className="run-all-switch" aria-hidden="true" />
+								<span>All</span>
+							</label>
+						)}
+						<button type="button" className="primary" disabled={!props.canRun} onClick={props.onRun}>
+							<Zap size={16} />
+							{props.runButtonLabel}
 						</button>
-					) : (
-						<button type="button" onClick={props.onReset}>
-							<RotateCcw size={16} />
-							Reset
+					</div>
+					<div className="utility-actions">
+						{props.isBusy ? (
+							<button type="button" onClick={props.onCancelRun}>
+								<X size={16} />
+								Cancel
+							</button>
+						) : (
+							<button type="button" onClick={props.onReset}>
+								<RotateCcw size={16} />
+								Reset
+							</button>
+						)}
+						<button
+							type="button"
+							className="icon-button theme-toggle"
+							title={`Switch to ${nextTheme} theme`}
+							aria-label={`Switch to ${nextTheme} theme`}
+							aria-pressed={props.theme === "light"}
+							onClick={props.onToggleTheme}
+						>
+							<ThemeIcon size={16} />
 						</button>
-					)}
+					</div>
 				</div>
 			</header>
 
