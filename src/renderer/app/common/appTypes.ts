@@ -4,6 +4,7 @@ import type { VhdLayerInfo } from "../../../fsdecrypt/vhd"
 import type { PickedFile } from "../../electron-api"
 
 export type ToolMode = "container" | "option" | "vhd"
+export type AppScreen = "extract" | "icf"
 export type HistoryStatus = "success" | "failed" | "cancelled"
 export type ThemeMode = "dark" | "light"
 
@@ -63,6 +64,7 @@ export type OptionLayerInfo = {
 
 export type OptionSelectionGroup = {
 	id: string
+	selected: boolean
 	label: string
 	files: PickedFile[]
 	optionLayers: OptionLayerInfo[]
@@ -87,6 +89,7 @@ export type AppLayerInfo = {
 
 export type MergeSelectionGroup = {
 	id: string
+	selected: boolean
 	label: string
 	files: PickedFile[]
 	appLayers: AppLayerInfo[]

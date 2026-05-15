@@ -13,6 +13,7 @@ import {
 	HardDriveDownload,
 	History,
 	Info,
+	ListTree,
 	Link2,
 	Moon,
 	RotateCcw,
@@ -30,6 +31,7 @@ import type { PickedFile } from "../../electron-api"
 import { MODES } from "../common/modes"
 import type {
 	ActiveJob,
+	AppScreen,
 	BaseSelectionGroup,
 	CompletedResult,
 	ExportHistoryItem,
@@ -40,6 +42,8 @@ import type {
 	ThemeMode,
 	ToolMode
 } from "../common/appTypes"
+import { IcfView } from "./icfView"
+import type { SelectionQueues } from "../services/selectionQueue"
 
 function chainLayerClass(state: "linked" | "missing" | "standalone") {
 	return state === "standalone" ? "chain-layer" : `chain-layer ${state}`
@@ -70,15 +74,34 @@ function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolM
 	)
 }
 
+function ScreenToggle({ screen, onChange }: { screen: AppScreen; onChange: (screen: AppScreen) => void }) {
+	const activeIndex = screen === "extract" ? 0 : 1
+	return (
+		<div className="screen-toggle" style={{ "--active-index": activeIndex } as React.CSSProperties}>
+			<div className="screen-indicator" />
+			<button type="button" className={screen === "extract" ? "active" : ""} onClick={() => onChange("extract")}>
+				<HardDriveDownload size={15} />
+				<span>Extract</span>
+			</button>
+			<button type="button" className={screen === "icf" ? "active" : ""} onClick={() => onChange("icf")}>
+				<ListTree size={15} />
+				<span>ICF</span>
+			</button>
+		</div>
+	)
+}
+
 function MergeSelection({
 	groups,
 	isAnalyzing,
 	onRemoveFile,
+	onToggleGroup,
 	onMoveToMerge
 }: {
 	groups: Array<MergeSelectionGroup | BaseSelectionGroup>
 	isAnalyzing: boolean
 	onRemoveFile: (path: string) => void
+	onToggleGroup: (id: string, selected: boolean) => void
 	onMoveToMerge?: (group: BaseSelectionGroup) => void
 }) {
 	if (isAnalyzing) {
@@ -92,8 +115,16 @@ function MergeSelection({
 	return (
 		<div className="selected-list">
 			{groups.map((group, index) => (
-				<div className="chain-card" key={group.id || index}>
+				<div className={`chain-card ${group.selected ? "" : "excluded"}`} key={group.id || index}>
 					<div className="chain-card-header">
+						<div className="chain-select">
+							<input
+								type="checkbox"
+								checked={group.selected}
+								aria-label={`${group.selected ? "Exclude" : "Include"} ${group.label}`}
+								onChange={event => onToggleGroup(group.id, event.currentTarget.checked)}
+							/>
+						</div>
 						<div>
 							<label>{group.rawVhds.length > 0 ? "VHD Chain" : "APP Chain"}</label>
 							<strong title={group.label}>{group.label}</strong>
@@ -165,11 +196,13 @@ function MergeSelection({
 function OptionSelection({
 	groups,
 	isAnalyzing,
-	onRemoveFile
+	onRemoveFile,
+	onToggleGroup
 }: {
 	groups: OptionSelectionGroup[]
 	isAnalyzing: boolean
 	onRemoveFile: (path: string) => void
+	onToggleGroup: (id: string, selected: boolean) => void
 }) {
 	if (isAnalyzing) {
 		return <div className="muted">Reading OPTION VHD metadata...</div>
@@ -182,8 +215,16 @@ function OptionSelection({
 	return (
 		<div className="selected-list">
 			{groups.map((group, index) => (
-				<div className="chain-card" key={group.id || index}>
+				<div className={`chain-card ${group.selected ? "" : "excluded"}`} key={group.id || index}>
 					<div className="chain-card-header">
+						<div className="chain-select">
+							<input
+								type="checkbox"
+								checked={group.selected}
+								aria-label={`${group.selected ? "Exclude" : "Include"} ${group.label}`}
+								onChange={event => onToggleGroup(group.id, event.currentTarget.checked)}
+							/>
+						</div>
 						<div>
 							<label>OPTION VHD Chain</label>
 							<strong title={group.label}>{group.label}</strong>
@@ -282,6 +323,7 @@ function HistoryPanel({
 }
 
 export type AppViewProps = {
+	screen: AppScreen
 	mode: ToolMode
 	theme: ThemeMode
 	modeLabel: string
@@ -310,7 +352,11 @@ export type AppViewProps = {
 	runStats: RunStats
 	activeJob: ActiveJob | null
 	logs: string[]
+	queues: SelectionQueues
 	terminalRef: RefObject<HTMLDivElement | null>
+	onScreenChange: (screen: AppScreen) => void
+	onToggleGroupSelected: (mode: ToolMode, groupId: string, selected: boolean) => void
+	onSetModeGroupsSelected: (mode: ToolMode, selected: boolean) => void
 	onModeChange: (mode: ToolMode) => void
 	onToggleTheme: () => void
 	onRun: () => void
@@ -338,44 +384,53 @@ export type AppViewProps = {
 export function AppView(props: AppViewProps) {
 	const ThemeIcon = props.theme === "dark" ? Sun : Moon
 	const nextTheme = props.theme === "dark" ? "light" : "dark"
+	const currentSelectionGroups =
+		props.mode === "vhd" ? props.mergeGroups : props.mode === "option" ? props.optionGroups : props.baseGroups
+	const allCurrentGroupsSelected = currentSelectionGroups.length > 0 && currentSelectionGroups.every(group => group.selected)
+	const checkedCurrentGroupCount = currentSelectionGroups.filter(group => group.selected).length
 	return (
 		<div className="app-shell">
 			<header className="titlebar">
-				<div>
-					<h1>fsdecryptGUI</h1>
-					<p>Extract APP, Option, and VHD chain contents to a local folder.</p>
+				<div className="titlebar-heading">
+					<div>
+						<h1>fsdecryptGUI</h1>
+						<p>Extract containers and manage ICF metadata from the same workspace.</p>
+					</div>
+					<ScreenToggle screen={props.screen} onChange={props.onScreenChange} />
 				</div>
 				<div className="actions">
-					<div className="run-actions">
+					<div className={`run-actions ${props.screen === "extract" ? "" : "layout-placeholder"}`} aria-hidden={props.screen !== "extract"}>
 						{props.hasMultipleModeJobs && (
 							<label className={`run-all-toggle ${props.runAllModes ? "active" : ""} ${props.isBusy ? "disabled" : ""}`}>
 								<input
 									type="checkbox"
 									checked={props.runAllModes}
-									disabled={props.isBusy}
+									disabled={props.isBusy || props.screen !== "extract"}
 									onChange={event => props.onRunAllModesChange(event.currentTarget.checked)}
 								/>
 								<span className="run-all-switch" aria-hidden="true" />
 								<span>All</span>
 							</label>
 						)}
-						<button type="button" className="primary" disabled={!props.canRun} onClick={props.onRun}>
+						<button type="button" className="primary" disabled={!props.canRun || props.screen !== "extract"} onClick={props.onRun}>
 							<Zap size={16} />
 							{props.runButtonLabel}
 						</button>
 					</div>
-					<div className="utility-actions">
+					<div className={`utility-actions ${props.screen === "extract" ? "" : "layout-placeholder"}`} aria-hidden={props.screen !== "extract"}>
 						{props.isBusy ? (
-							<button type="button" onClick={props.onCancelRun}>
+							<button type="button" disabled={props.screen !== "extract"} onClick={props.onCancelRun}>
 								<X size={16} />
 								Cancel
 							</button>
 						) : (
-							<button type="button" onClick={props.onReset}>
+							<button type="button" disabled={props.screen !== "extract"} onClick={props.onReset}>
 								<RotateCcw size={16} />
 								Reset
 							</button>
 						)}
+					</div>
+					<div className="utility-actions">
 						<button
 							type="button"
 							className="icon-button theme-toggle"
@@ -390,6 +445,9 @@ export function AppView(props: AppViewProps) {
 				</div>
 			</header>
 
+			{props.screen === "icf" ? (
+				<IcfView queues={props.queues} isBusy={props.isBusy} />
+			) : (
 			<main className="workspace">
 				<section className="left-panel">
 					<ModeToggle mode={props.mode} onChange={props.onModeChange} />
@@ -411,16 +469,40 @@ export function AppView(props: AppViewProps) {
 					</button>
 
 					<div className="info-block selected-block">
-						<label>Selected</label>
+						<div className="selected-heading">
+							<label>Selected</label>
+							<label className="select-all-toggle">
+								<input
+									type="checkbox"
+									checked={allCurrentGroupsSelected}
+									disabled={props.isBusy || currentSelectionGroups.length === 0}
+									onChange={event => props.onSetModeGroupsSelected(props.mode, event.currentTarget.checked)}
+								/>
+								<span>
+									All {checkedCurrentGroupCount}/{currentSelectionGroups.length}
+								</span>
+							</label>
+						</div>
 						{props.mode === "vhd" ? (
-							<MergeSelection groups={props.mergeGroups} isAnalyzing={props.isAnalyzingMerge} onRemoveFile={props.onRemoveMergeFile} />
+							<MergeSelection
+								groups={props.mergeGroups}
+								isAnalyzing={props.isAnalyzingMerge}
+								onRemoveFile={props.onRemoveMergeFile}
+								onToggleGroup={(id, selected) => props.onToggleGroupSelected("vhd", id, selected)}
+							/>
 						) : props.mode === "option" ? (
-							<OptionSelection groups={props.optionGroups} isAnalyzing={props.isAnalyzingOptions} onRemoveFile={props.onRemoveOptionFile} />
+							<OptionSelection
+								groups={props.optionGroups}
+								isAnalyzing={props.isAnalyzingOptions}
+								onRemoveFile={props.onRemoveOptionFile}
+								onToggleGroup={(id, selected) => props.onToggleGroupSelected("option", id, selected)}
+							/>
 						) : (
 							<MergeSelection
 								groups={props.baseGroups}
 								isAnalyzing={props.isAnalyzingBase}
 								onRemoveFile={props.onRemoveBaseFile}
+								onToggleGroup={(id, selected) => props.onToggleGroupSelected("container", id, selected)}
 								onMoveToMerge={props.onMoveBaseGroupToMerge}
 							/>
 						)}
@@ -600,6 +682,7 @@ export function AppView(props: AppViewProps) {
 					</div>
 				</section>
 			</main>
+			)}
 		</div>
 	)
 }

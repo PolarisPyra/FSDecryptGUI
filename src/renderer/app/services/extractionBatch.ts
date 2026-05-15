@@ -38,27 +38,30 @@ export async function runExtractionBatch(request: ExtractionBatchRequest) {
 			elapsedMs: performance.now() - request.startedAt
 		}))
 	}
+	const selectedBaseFiles = request.queues.container.groups.filter(group => group.selected).flatMap(group => group.files)
+	const selectedOptionFiles = request.queues.option.groups.filter(group => group.selected).flatMap(group => group.files)
+	const selectedMergeGroups = request.queues.vhd.groups.filter(group => group.selected)
 	const extractionContext = {
 		outputRoot: request.outputRoot,
 		keySource: request.keySource,
-		optionFiles: request.queues.option.files,
+		optionFiles: selectedOptionFiles,
 		appendLog: request.appendLog,
 		setProgress: request.setProgress,
 		setRunStats: request.setRunStats
 	}
-	const baseJobs = request.queues.container.files.map(file => ({
+	const baseJobs = selectedBaseFiles.map(file => ({
 		mode: "container" as ToolMode,
 		label: stripExtension(file.name),
 		sources: [file.name],
 		run: () => runBaseExport(extractionContext, file, elapsedDetails, request.signal, noteBytesWritten)
 	}))
-	const optionJobs = request.queues.option.files.map(file => ({
+	const optionJobs = selectedOptionFiles.map(file => ({
 		mode: "option" as ToolMode,
 		label: stripExtension(file.name),
 		sources: [file.name],
 		run: () => runOptionExport(extractionContext, file, elapsedDetails, request.signal, noteBytesWritten)
 	}))
-	const mergeJobs = request.queues.vhd.groups.map(group => ({
+	const mergeJobs = selectedMergeGroups.map(group => ({
 		mode: "vhd" as ToolMode,
 		label: group.label,
 		sources: group.files.map(file => file.name),

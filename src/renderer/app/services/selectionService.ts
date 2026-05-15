@@ -243,6 +243,7 @@ export async function buildMergeGroups(files: PickedFile[], keySource: ReadableB
 
 		return {
 			id: sorted.map(layer => layer.file.path).join("|"),
+			selected: true,
 			label,
 			files: sorted.map(layer => layer.file),
 			appLayers: sorted,
@@ -259,6 +260,7 @@ export async function buildMergeGroups(files: PickedFile[], keySource: ReadableB
 		const rawVhdLayers = await inspectRawVhdLayers(rawVhds)
 		result.push({
 			id: rawVhds.map(file => file.path).join("|"),
+			selected: true,
 			label: rawVhds.length === 1 ? stripExtension(rawVhds[0].name) : `Raw VHD Chain (${rawVhds.length})`,
 			files: rawVhds,
 			appLayers: [],
@@ -461,6 +463,7 @@ export async function buildOptionGroups(files: PickedFile[], keySource: Readable
 
 		return {
 			id: layers.map(layer => layer.file.path).join("|"),
+			selected: true,
 			label,
 			files: layers.map(layer => layer.file),
 			optionLayers: layers,

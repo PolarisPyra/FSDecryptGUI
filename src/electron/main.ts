@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises"
 
 import { ConfigPatch, readRendererConfig, updateConfig } from "./config.js"
 import { createWindow, focusedWindow, installMenu } from "./chrome.js"
-import { chooseInputFolder, chooseOutputFolder, openConfigFolder, pickFiles, saveText, scanInputFolder } from "./dialogs.js"
+import { chooseInputFolder, chooseOutputFolder, openConfigFolder, pickFiles, saveBinary, saveText, scanInputFolder } from "./dialogs.js"
 import {
 	closeInputHandles,
 	closeOutputHandle,
@@ -16,7 +16,7 @@ import {
 	safeOutputPath,
 	writeOutputFileChunk
 } from "./fileSystem.js"
-import type { DecryptFscryptRangeRequest, OutputFolderRequest, SaveTextRequest, WriteFileRequest } from "./ipcTypes.js"
+import type { DecryptFscryptRangeRequest, OutputFolderRequest, SaveBinaryRequest, SaveTextRequest, WriteFileRequest } from "./ipcTypes.js"
 
 app.setName("fsdecryptGUI")
 
@@ -58,6 +58,11 @@ ipcMain.handle("app:copyText", async (_event, text: string) => {
 ipcMain.handle("app:saveText", async (_event, request: SaveTextRequest) => {
 	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
 	return saveText(window, request)
+})
+
+ipcMain.handle("app:saveBinary", async (_event, request: SaveBinaryRequest) => {
+	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
+	return saveBinary(window, request)
 })
 
 ipcMain.handle("app:notify", async (_event, request: { title: string; body: string }) => {

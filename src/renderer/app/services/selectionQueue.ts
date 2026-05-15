@@ -31,19 +31,27 @@ export function emptySelectionQueues(): SelectionQueues {
 	}
 }
 
+function preserveGroupSelection<T extends { id: string; selected: boolean }>(nextGroups: T[], previousGroups: T[] = []) {
+	const previousSelection = new Map(previousGroups.map(group => [group.id, group.selected]))
+	return nextGroups.map(group => ({
+		...group,
+		selected: previousSelection.get(group.id) ?? true
+	}))
+}
+
 export function selectionJobCounts(queues: SelectionQueues): Record<ToolMode, number> {
 	return {
-		container: queues.container.files.length,
-		option: queues.option.files.length,
-		vhd: queues.vhd.groups.length
+		container: queues.container.groups.filter(group => group.selected).reduce((count, group) => count + group.files.length, 0),
+		option: queues.option.groups.filter(group => group.selected).reduce((count, group) => count + group.files.length, 0),
+		vhd: queues.vhd.groups.filter(group => group.selected).length
 	}
 }
 
 export function selectionWarningState(queues: SelectionQueues): Record<ToolMode, boolean> {
 	return {
-		container: queues.container.groups.some(group => group.warning),
-		option: queues.option.groups.some(group => group.warning),
-		vhd: queues.vhd.groups.some(group => group.warning)
+		container: queues.container.groups.some(group => group.selected && group.warning),
+		option: queues.option.groups.some(group => group.selected && group.warning),
+		vhd: queues.vhd.groups.some(group => group.selected && group.warning)
 	}
 }
 
@@ -91,9 +99,9 @@ export async function analyzeInputScan(
 		buildMergeGroups(mergeFiles, keySource)
 	])
 	const queues: SelectionQueues = {
-		container: { files: baseFiles, groups: baseGroups },
-		option: { files: scan.files.options, groups: optionGroups },
-		vhd: { files: mergeFiles, groups: mergeGroups }
+		container: { files: baseFiles, groups: preserveGroupSelection(baseGroups) },
+		option: { files: scan.files.options, groups: preserveGroupSelection(optionGroups) },
+		vhd: { files: mergeFiles, groups: preserveGroupSelection(mergeGroups) }
 	}
 	const detectedModes = [baseFiles.length > 0, scan.files.options.length > 0, mergeGroups.length > 0].filter(Boolean).length
 	const nextMode: ToolMode = baseFiles.length > 0 ? "container" : scan.files.options.length > 0 ? "option" : mergeGroups.length > 0 ? "vhd" : currentMode
@@ -114,24 +122,27 @@ export async function appendToSelectionQueue(
 ): Promise<SelectionQueues> {
 	if (mode === "option") {
 		const optionFiles = appendPickedFiles(queues.option.files, files)
+		const optionGroups = await buildOptionGroups(optionFiles, keySource)
 		return {
 			...queues,
-			option: { files: optionFiles, groups: await buildOptionGroups(optionFiles, keySource) }
+			option: { files: optionFiles, groups: preserveGroupSelection(optionGroups, queues.option.groups) }
 		}
 	}
 
 	if (mode === "vhd") {
 		const mergeFiles = appendPickedFiles(queues.vhd.files, files)
+		const mergeGroups = await buildMergeGroups(mergeFiles, keySource)
 		return {
 			...queues,
-			vhd: { files: mergeFiles, groups: await buildMergeGroups(mergeFiles, keySource) }
+			vhd: { files: mergeFiles, groups: preserveGroupSelection(mergeGroups, queues.vhd.groups) }
 		}
 	}
 
 	const baseFiles = appendPickedFiles(queues.container.files, files)
+	const baseGroups = await buildBaseGroups(baseFiles, keySource)
 	return {
 		...queues,
-		container: { files: baseFiles, groups: await buildBaseGroups(baseFiles, keySource) }
+		container: { files: baseFiles, groups: preserveGroupSelection(baseGroups, queues.container.groups) }
 	}
 }
 
@@ -143,24 +154,27 @@ export async function removeFromSelectionQueue(
 ): Promise<SelectionQueues> {
 	if (mode === "option") {
 		const optionFiles = queues.option.files.filter(file => file.path !== path)
+		const optionGroups = optionFiles.length > 0 ? await buildOptionGroups(optionFiles, keySource) : []
 		return {
 			...queues,
-			option: { files: optionFiles, groups: optionFiles.length > 0 ? await buildOptionGroups(optionFiles, keySource) : [] }
+			option: { files: optionFiles, groups: preserveGroupSelection(optionGroups, queues.option.groups) }
 		}
 	}
 
 	if (mode === "vhd") {
 		const mergeFiles = queues.vhd.files.filter(file => file.path !== path)
+		const mergeGroups = mergeFiles.length > 0 ? await buildMergeGroups(mergeFiles, keySource) : []
 		return {
 			...queues,
-			vhd: { files: mergeFiles, groups: mergeFiles.length > 0 ? await buildMergeGroups(mergeFiles, keySource) : [] }
+			vhd: { files: mergeFiles, groups: preserveGroupSelection(mergeGroups, queues.vhd.groups) }
 		}
 	}
 
 	const baseFiles = queues.container.files.filter(file => file.path !== path)
+	const baseGroups = baseFiles.length > 0 ? await buildBaseGroups(baseFiles, keySource) : []
 	return {
 		...queues,
-		container: { files: baseFiles, groups: baseFiles.length > 0 ? await buildBaseGroups(baseFiles, keySource) : [] }
+		container: { files: baseFiles, groups: preserveGroupSelection(baseGroups, queues.container.groups) }
 	}
 }
 
@@ -172,9 +186,9 @@ export async function refreshSelectionQueues(queues: SelectionQueues, keySource:
 	])
 
 	return {
-		container: { files: queues.container.files, groups: baseGroups },
-		option: { files: queues.option.files, groups: optionGroups },
-		vhd: { files: queues.vhd.files, groups: mergeGroups }
+		container: { files: queues.container.files, groups: preserveGroupSelection(baseGroups, queues.container.groups) },
+		option: { files: queues.option.files, groups: preserveGroupSelection(optionGroups, queues.option.groups) },
+		vhd: { files: queues.vhd.files, groups: preserveGroupSelection(mergeGroups, queues.vhd.groups) }
 	}
 }
 
@@ -193,7 +207,7 @@ export async function moveBaseGroupToMergeQueue(
 
 	return {
 		...queues,
-		container: { files: baseFiles, groups: baseGroups },
-		vhd: { files: mergeFiles, groups: mergeGroups }
+		container: { files: baseFiles, groups: preserveGroupSelection(baseGroups, queues.container.groups) },
+		vhd: { files: mergeFiles, groups: preserveGroupSelection(mergeGroups, queues.vhd.groups) }
 	}
 }

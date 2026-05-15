@@ -4,7 +4,7 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import { readRendererConfig, updateConfig } from "./config.js"
-import type { PickFileOptions, PickedFile, SaveTextRequest, ScannedInputFolder } from "./ipcTypes.js"
+import type { PickFileOptions, PickedFile, SaveBinaryRequest, SaveTextRequest, ScannedInputFolder } from "./ipcTypes.js"
 
 function sendConfig(window: BrowserWindow, config: Awaited<ReturnType<typeof readRendererConfig>>) {
 	window.webContents.send("config:changed", config)
@@ -137,5 +137,22 @@ export async function saveText(window: BrowserWindow | undefined, request: SaveT
 	}
 
 	await writeFile(result.filePath, request.content, "utf8")
+	return result.filePath
+}
+
+export async function saveBinary(window: BrowserWindow | undefined, request: SaveBinaryRequest) {
+	const dialogOptions: SaveDialogOptions = {
+		title: "Save ICF",
+		defaultPath: request.defaultName,
+		filters: [{ name: "All files", extensions: ["*"] }]
+	}
+	const result = window ? await dialog.showSaveDialog(window, dialogOptions) : await dialog.showSaveDialog(dialogOptions)
+
+	if (result.canceled || !result.filePath) {
+		return undefined
+	}
+
+	const content = request.content instanceof ArrayBuffer ? Buffer.from(request.content) : Buffer.from(request.content)
+	await writeFile(result.filePath, content)
 	return result.filePath
 }

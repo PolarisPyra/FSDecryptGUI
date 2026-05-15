@@ -49,6 +49,11 @@ export type SaveTextRequest = {
 	content: string
 }
 
+export type SaveBinaryRequest = {
+	defaultName: string
+	content: ArrayBuffer | Uint8Array
+}
+
 export type NotifyRequest = {
 	title: string
 	body: string

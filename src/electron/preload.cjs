@@ -9,6 +9,11 @@ const api = {
 	openConfigFolder: () => ipcRenderer.invoke("config:openFolder"),
 	copyText: text => ipcRenderer.invoke("app:copyText", text),
 	saveText: request => ipcRenderer.invoke("app:saveText", request),
+	saveBinary: request =>
+		ipcRenderer.invoke("app:saveBinary", {
+			defaultName: request.defaultName,
+			content: request.content.buffer.slice(request.content.byteOffset, request.content.byteOffset + request.content.byteLength)
+		}),
 	notify: request => ipcRenderer.invoke("app:notify", request),
 	onConfigChanged: callback => {
 		const listener = (_event, config) => callback(config)

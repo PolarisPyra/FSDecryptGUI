@@ -8,6 +8,7 @@ import { AppView } from "./app/browser/appView"
 import { MODES } from "./app/common/modes"
 import type {
 	BaseSelectionGroup,
+	AppScreen,
 	CompletedResult,
 	ExportHistoryItem,
 	RunStats,
@@ -45,6 +46,7 @@ function readStoredTheme(): ThemeMode {
 
 export function App() {
 	const [theme, setTheme] = useState<ThemeMode>(readStoredTheme)
+	const [screen, setScreen] = useState<AppScreen>("extract")
 	const [mode, setMode] = useState<ToolMode>("container")
 	const [inputRoot, setInputRoot] = useState("")
 	const [queues, setQueues] = useState<SelectionQueues>(emptySelectionQueues)
@@ -129,6 +131,52 @@ export function App() {
 
 	const clearHistory = () => {
 		setHistory([])
+	}
+
+	const setGroupSelected = (targetMode: ToolMode, groupId: string, selected: boolean) => {
+		setQueues(current => {
+			if (targetMode === "option") {
+				return {
+					...current,
+					option: {
+						...current.option,
+						groups: current.option.groups.map(group => (group.id === groupId ? { ...group, selected } : group))
+					}
+				}
+			}
+
+			if (targetMode === "vhd") {
+				return {
+					...current,
+					vhd: {
+						...current.vhd,
+						groups: current.vhd.groups.map(group => (group.id === groupId ? { ...group, selected } : group))
+					}
+				}
+			}
+
+			return {
+				...current,
+				container: {
+					...current.container,
+					groups: current.container.groups.map(group => (group.id === groupId ? { ...group, selected } : group))
+				}
+			}
+		})
+		setResult(null)
+	}
+
+	const setModeGroupsSelected = (targetMode: ToolMode, selected: boolean) => {
+		setQueues(current => {
+			if (targetMode === "option") {
+				return { ...current, option: { ...current.option, groups: current.option.groups.map(group => ({ ...group, selected })) } }
+			}
+			if (targetMode === "vhd") {
+				return { ...current, vhd: { ...current.vhd, groups: current.vhd.groups.map(group => ({ ...group, selected })) } }
+			}
+			return { ...current, container: { ...current.container, groups: current.container.groups.map(group => ({ ...group, selected })) } }
+		})
+		setResult(null)
 	}
 
 	const copyLogs = async () => {
@@ -519,6 +567,7 @@ export function App() {
 
 	return (
 		<AppView
+			screen={screen}
 			mode={mode}
 			theme={theme}
 			modeLabel={modeLabel}
@@ -547,7 +596,11 @@ export function App() {
 			runStats={runStats}
 			activeJob={activeJob}
 			logs={logs}
+			queues={queues}
 			terminalRef={terminalRef}
+			onScreenChange={setScreen}
+			onToggleGroupSelected={setGroupSelected}
+			onSetModeGroupsSelected={setModeGroupsSelected}
 			onModeChange={next => {
 				setMode(next)
 				setResult(null)

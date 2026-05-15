@@ -28,6 +28,7 @@ export type ElectronApi = {
 	openConfigFolder: () => Promise<void>
 	copyText: (text: string) => Promise<void>
 	saveText: (request: SaveTextRequest) => Promise<string | undefined>
+	saveBinary: (request: SaveBinaryRequest) => Promise<string | undefined>
 	notify: (request: NotifyRequest) => Promise<void>
 	onConfigChanged: (callback: (config: RendererConfig) => void) => () => void
 	onInputFolderScanned: (callback: (scan: ScannedInputFolder) => void) => () => void
@@ -58,6 +59,11 @@ export type ConfigPatch = {
 export type SaveTextRequest = {
 	defaultName: string
 	content: string
+}
+
+export type SaveBinaryRequest = {
+	defaultName: string
+	content: Uint8Array<ArrayBufferLike>
 }
 
 export type NotifyRequest = {
