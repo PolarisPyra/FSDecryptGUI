@@ -3,11 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import YAML from "yaml"
 
-export type PickedFile = {
-	path: string
-	name: string
-	size: number
-}
+import type { ConfigPatch, PickedFile, RendererConfig } from "./ipcTypes.js"
 
 type StoredConfig = {
 	version?: number
@@ -18,25 +14,23 @@ type StoredConfig = {
 	}
 }
 
-export type RendererConfig = {
-	configPath: string
-	inputRoot?: string
-	outputRoot?: string
-	keyFile?: PickedFile
-}
-
-export type ConfigPatch = {
-	inputRoot?: string | null
-	outputRoot?: string | null
-	keyFilePath?: string | null
-}
-
 const CONFIG_FILENAME = "config.yaml"
 
+/**
+ * Resolves the per-user YAML config path inside Electron's app data folder.
+ *
+ * @returns Absolute path to `config.yaml`.
+ */
 export function configPath() {
 	return path.join(app.getPath("userData"), CONFIG_FILENAME)
 }
 
+/**
+ * Converts a stored file path into renderer-safe picked-file metadata.
+ *
+ * @param filePath Path read from the config file.
+ * @returns Picked file metadata, or undefined when the file is missing.
+ */
 export async function pickedFileFromPath(filePath: string): Promise<PickedFile | undefined> {
 	try {
 		const fileStat = await stat(filePath)
@@ -54,6 +48,11 @@ export async function pickedFileFromPath(filePath: string): Promise<PickedFile |
 	}
 }
 
+/**
+ * Reads and parses config YAML, returning an empty object on first run or errors.
+ *
+ * @returns Stored config values that may be incomplete.
+ */
 async function readStoredConfig(): Promise<StoredConfig> {
 	try {
 		const raw = await readFile(configPath(), "utf8")
@@ -64,6 +63,11 @@ async function readStoredConfig(): Promise<StoredConfig> {
 	}
 }
 
+/**
+ * Writes config YAML while omitting unset optional values.
+ *
+ * @param config Stored config state to persist.
+ */
 async function writeStoredConfig(config: StoredConfig) {
 	const target = configPath()
 	await mkdir(path.dirname(target), { recursive: true })
@@ -81,6 +85,11 @@ async function writeStoredConfig(config: StoredConfig) {
 	)
 }
 
+/**
+ * Builds the config payload consumed by the renderer.
+ *
+ * @returns Config plus live metadata for the selected Custom Key File.
+ */
 export async function readRendererConfig(): Promise<RendererConfig> {
 	const stored = await readStoredConfig()
 	const keyFile = stored.keys?.selectedKeyFile ? await pickedFileFromPath(stored.keys.selectedKeyFile) : undefined
@@ -93,6 +102,12 @@ export async function readRendererConfig(): Promise<RendererConfig> {
 	}
 }
 
+/**
+ * Applies a partial config patch and returns the refreshed renderer config.
+ *
+ * @param patch Validated config fields from IPC.
+ * @returns Updated renderer config.
+ */
 export async function updateConfig(patch: ConfigPatch): Promise<RendererConfig> {
 	const stored = await readStoredConfig()
 

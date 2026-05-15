@@ -21,6 +21,19 @@ export type ScannedInputFolder = {
 	}
 }
 
+export type RendererConfig = {
+	configPath: string
+	inputRoot?: string
+	outputRoot?: string
+	keyFile?: PickedFile
+}
+
+export type ConfigPatch = {
+	inputRoot?: string | null
+	outputRoot?: string | null
+	keyFilePath?: string | null
+}
+
 export type WriteFileRequest = {
 	rootPath: string
 	segments: string[]

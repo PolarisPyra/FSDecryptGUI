@@ -1,58 +1,13 @@
 import type { ReadableByteSource } from "../../../fsdecrypt/byte-source"
 import type { VhdLayerInfo } from "../../../fsdecrypt/vhd"
 import type { NtfsExtractionWriter } from "../../../fsdecrypt/ntfs"
-import { formatBytes, formatVersion } from "../../base/common/format"
+import { formatVersion } from "../../base/common/format"
 import { stripExtension } from "../../base/common/path"
 import { PickedFile, byteSourceFromPickedFile } from "../../electron-api"
-import type {
-	AppLayerInfo,
-	BaseSelectionGroup,
-	KeyValidation,
-	LayerDisplayInfo,
-	MergeSelectionGroup,
-	OptionLayerInfo,
-	OptionSelectionGroup,
-	OptionVhdLayerInfo,
-	VersionLike
-} from "../common/appTypes"
+import type { AppLayerInfo, BaseSelectionGroup, LayerDisplayInfo, MergeSelectionGroup, OptionLayerInfo, OptionSelectionGroup, OptionVhdLayerInfo, VersionLike } from "../common/appTypes"
 
-export function appendPickedFiles(current: PickedFile[], picked: PickedFile[]) {
-	const merged = [...current]
-	const seen = new Set(current.map(file => file.path))
-	for (const file of picked) {
-		if (seen.has(file.path)) continue
-		seen.add(file.path)
-		merged.push(file)
-	}
-
-	return merged
-}
-
-export function validateKeyFile(file: PickedFile | null): KeyValidation {
-	if (!file) {
-		return {
-			status: "builtin",
-			label: "Built-in",
-			detail: "Built-in key table active"
-		}
-	}
-
-	if (file.size === 16 || file.size === 32) {
-		return {
-			status: "valid",
-			label: "Custom",
-			detail: `Custom key active · ${file.size} bytes`
-		}
-	}
-
-	return {
-		status: "invalid",
-		label: "Invalid",
-		detail: `Expected 16 or 32 bytes · ${formatBytes(file.size)} selected`,
-		error: "External key file must be 16 or 32 bytes"
-	}
-}
-
+// Converts selected APPs, OPTIONs, and raw VHD Layers into Selection Groups.
+// Blocking Warning decisions live here so every caller reads the same Layer Chain model.
 export function filesystemFromBootSector(boot: Uint8Array) {
 	const oemId = new TextDecoder("ascii").decode(boot.slice(3, 11))
 	if (oemId === "EXFAT   ") return "exFAT"
@@ -60,6 +15,12 @@ export function filesystemFromBootSector(boot: Uint8Array) {
 	return undefined
 }
 
+/**
+ * Creates a stable comparable key for fscrypt version metadata.
+ *
+ * @param version Version-like object from boot metadata.
+ * @returns Dot-separated version key.
+ */
 export function versionKey(version: VersionLike) {
 	return `${version.major}.${version.minor}.${version.release}`
 }
@@ -92,6 +53,12 @@ function linkedOptionChild(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]
 	return layer.vhdLayers.find(vhd => allVhds.some(candidate => candidate.parentId === vhd.ownId))
 }
 
+/**
+ * Builds display metadata for an APP layer after parent/child matching.
+ *
+ * @param layer APP metadata plus any discovered relations.
+ * @returns UI-friendly layer state and detail text.
+ */
 function appLayerDisplay(layer: Pick<AppLayerInfo, "bootId" | "childFile" | "error" | "parentFile">): LayerDisplayInfo {
 	if (layer.error) {
 		return { state: "missing", role: "error", detail: layer.error }
@@ -114,6 +81,13 @@ function appLayerDisplay(layer: Pick<AppLayerInfo, "bootId" | "childFile" | "err
 	return { state: "missing", role: "error", detail: "Unknown APP" }
 }
 
+/**
+ * Builds display metadata for an OPTION's internal VHD Layer state.
+ *
+ * @param layer OPTION metadata and discovered internal VHD Layers.
+ * @param allVhds All VHD Layers from the current OPTION Selection Queue.
+ * @returns UI-friendly layer state and detail text.
+ */
 function optionLayerDisplay(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]): LayerDisplayInfo {
 	if (layer.error) {
 		return { state: "missing", role: "error", detail: layer.error }
@@ -148,6 +122,12 @@ function optionLayerDisplay(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[
 	return { state: "standalone", role: "standalone", detail: `${firstVhd.diskType} · ${firstVhd.name}` }
 }
 
+/**
+ * Detects Blocking Warnings for a raw VHD Chain.
+ *
+ * @param layers Parsed VHD Layer metadata.
+ * @returns Warning text when the chain is incomplete or ambiguous.
+ */
 function rawVhdWarning(layers: VhdLayerInfo[]) {
 	const bases = layers.filter(layer => layer.diskType !== "differencing/child")
 	if (bases.length === 0) {
@@ -173,6 +153,13 @@ function rawVhdWarning(layers: VhdLayerInfo[]) {
 	return undefined
 }
 
+/**
+ * Reads APP metadata and links child APPs to selected Parent Layers.
+ *
+ * @param files Picked files from Base or Merge.
+ * @param keySource Optional Custom Key File source.
+ * @returns APP layer metadata with display state.
+ */
 async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<AppLayerInfo[]> {
 	const appFiles = files.filter(file => file.name.toLowerCase().endsWith(".app"))
 	const { openFscryptSource } = await import("../../../fsdecrypt/fsdecrypt")
@@ -212,6 +199,13 @@ async function inspectAppLayers(files: PickedFile[], keySource: ReadableByteSour
 	})
 }
 
+/**
+ * Builds Merge Selection Groups from APP Chains and raw VHD Layers.
+ *
+ * @param files Picked APP/VHD files.
+ * @param keySource Optional Custom Key File source.
+ * @returns Merge groups with Blocking Warnings and Notices attached.
+ */
 export async function buildMergeGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<MergeSelectionGroup[]> {
 	const rawVhds = files.filter(file => file.name.toLowerCase().endsWith(".vhd"))
 	const appLayers = await inspectAppLayers(files, keySource)
@@ -283,6 +277,13 @@ async function inspectRawVhdLayers(rawVhds: PickedFile[]) {
 	}
 }
 
+/**
+ * Builds Base Selection Groups by reusing Merge analysis and tightening warnings.
+ *
+ * @param files Picked APP files.
+ * @param keySource Optional Custom Key File source.
+ * @returns Base groups that block child APP extraction outside Merge.
+ */
 export async function buildBaseGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<BaseSelectionGroup[]> {
 	const groups = await buildMergeGroups(files, keySource)
 	return groups.map(group => {
@@ -304,6 +305,13 @@ export async function buildBaseGroups(files: PickedFile[], keySource: ReadableBy
 	})
 }
 
+/**
+ * Reads OPTION metadata, nested OPTIONs, and internal VHD Layers.
+ *
+ * @param files Picked OPTION files.
+ * @param keySource Optional Custom Key File source.
+ * @returns OPTION layer metadata with discovered internal VHD Layers.
+ */
 async function inspectOptionLayers(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<OptionLayerInfo[]> {
 	const [{ FSCRYPT_CONTAINER_TYPE, openFscryptSource }, { extractNtfsContents }, { extractExfatContents }, { inspectVhdLayers }] = await Promise.all([
 		import("../../../fsdecrypt/fsdecrypt"),
@@ -375,6 +383,12 @@ async function inspectOptionLayers(files: PickedFile[], keySource: ReadableByteS
 	)
 }
 
+/**
+ * Connects OPTIONs that participate in the same VHD Chain graph.
+ *
+ * @param optionLayers OPTION metadata from the current Selection Queue.
+ * @returns Sets of OPTION paths that form Selection Groups.
+ */
 function connectedOptionGroups(optionLayers: OptionLayerInfo[]) {
 	const allVhds = optionLayers.flatMap(layer => layer.vhdLayers)
 	const byOwnId = new Map(allVhds.map(vhd => [vhd.ownId, vhd]))
@@ -421,6 +435,13 @@ function connectedOptionGroups(optionLayers: OptionLayerInfo[]) {
 	return groups
 }
 
+/**
+ * Estimates a display sort depth for OPTIONs based on VHD parent links.
+ *
+ * @param layer OPTION layer being sorted.
+ * @param allVhds All VHD Layers from the current queue.
+ * @returns Chain depth used for stable parent-before-child sorting.
+ */
 function optionChainDepth(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[]) {
 	const first = layer.vhdLayers[0]
 	if (!first) {
@@ -441,6 +462,13 @@ function optionChainDepth(layer: OptionLayerInfo, allVhds: OptionVhdLayerInfo[])
 	return depth || layer.bootId?.sequenceNumber || 0
 }
 
+/**
+ * Builds Option Selection Groups and their Blocking Warnings.
+ *
+ * @param files Picked OPTION files.
+ * @param keySource Optional Custom Key File source.
+ * @returns OPTION groups sorted by VHD dependency order.
+ */
 export async function buildOptionGroups(files: PickedFile[], keySource: ReadableByteSource | undefined): Promise<OptionSelectionGroup[]> {
 	const optionLayers = await inspectOptionLayers(files, keySource)
 	const allVhds = optionLayers.flatMap(layer => layer.vhdLayers)

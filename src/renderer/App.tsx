@@ -24,15 +24,19 @@ import {
 	moveBaseGroupToMergeQueue,
 	refreshSelectionQueues,
 	removeFromSelectionQueue,
+	selectModeSelectionGroups,
+	selectSelectionGroup,
 	selectionSummary,
 	type SelectionQueues,
 	validateKeyFile
 } from "./app/services/selectionQueue"
 
+/** Builds the default per-mode analysis state used before file metadata scans start. */
 function idleSelectionAnalysis(): Record<ToolMode, boolean> {
 	return { container: false, option: false, vhd: false }
 }
 
+/** Marks one mode, or every mode, as actively analyzing selected files. */
 function activeSelectionAnalysis(mode?: ToolMode): Record<ToolMode, boolean> {
 	if (!mode) return { container: true, option: true, vhd: true }
 	return { ...idleSelectionAnalysis(), [mode]: true }
@@ -44,6 +48,7 @@ function readStoredTheme(): ThemeMode {
 	return localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark"
 }
 
+/** Owns renderer application state and wires the pure services to the browser/Electron view. */
 export function App() {
 	const [theme, setTheme] = useState<ThemeMode>(readStoredTheme)
 	const [screen, setScreen] = useState<AppScreen>("extract")
@@ -134,48 +139,12 @@ export function App() {
 	}
 
 	const setGroupSelected = (targetMode: ToolMode, groupId: string, selected: boolean) => {
-		setQueues(current => {
-			if (targetMode === "option") {
-				return {
-					...current,
-					option: {
-						...current.option,
-						groups: current.option.groups.map(group => (group.id === groupId ? { ...group, selected } : group))
-					}
-				}
-			}
-
-			if (targetMode === "vhd") {
-				return {
-					...current,
-					vhd: {
-						...current.vhd,
-						groups: current.vhd.groups.map(group => (group.id === groupId ? { ...group, selected } : group))
-					}
-				}
-			}
-
-			return {
-				...current,
-				container: {
-					...current.container,
-					groups: current.container.groups.map(group => (group.id === groupId ? { ...group, selected } : group))
-				}
-			}
-		})
+		setQueues(current => selectSelectionGroup(current, targetMode, groupId, selected))
 		setResult(null)
 	}
 
 	const setModeGroupsSelected = (targetMode: ToolMode, selected: boolean) => {
-		setQueues(current => {
-			if (targetMode === "option") {
-				return { ...current, option: { ...current.option, groups: current.option.groups.map(group => ({ ...group, selected })) } }
-			}
-			if (targetMode === "vhd") {
-				return { ...current, vhd: { ...current.vhd, groups: current.vhd.groups.map(group => ({ ...group, selected })) } }
-			}
-			return { ...current, container: { ...current.container, groups: current.container.groups.map(group => ({ ...group, selected })) } }
-		})
+		setQueues(current => selectModeSelectionGroups(current, targetMode, selected))
 		setResult(null)
 	}
 
@@ -542,22 +511,24 @@ export function App() {
 		setResult(null)
 
 		try {
-			await runExtractionBatch({
-				queues,
-				runScope: selection.effectiveRunScope,
-				scopeLabel: effectiveScopeLabel,
-				outputRoot,
-				keySource,
-				signal: abortController.signal,
-				startedAt,
-				appendLog,
-				addHistory,
-				notifyUser,
-				setActiveJob,
-				setProgress,
-				setResult,
-				setRunStats
-			})
+				await runExtractionBatch({
+					queues,
+					runScope: selection.effectiveRunScope,
+					scopeLabel: effectiveScopeLabel,
+					outputRoot,
+					keySource,
+					signal: abortController.signal,
+					startedAt,
+					events: {
+						appendLog,
+						addHistory,
+						notifyUser,
+						setActiveJob,
+						setProgress,
+						setResult,
+						setRunStats
+					}
+				})
 		} finally {
 			abortControllerRef.current = null
 			setIsBusy(false)

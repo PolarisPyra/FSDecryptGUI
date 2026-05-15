@@ -2,74 +2,32 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { AlertTriangle, CheckCircle2, Download, FilePlus2, FileUp, RefreshCw, ShieldAlert } from "lucide-react"
 
-import {
-	binToHex,
-	decodeIcfEntries,
-	decryptIcf,
-	encodeIcfEntries,
-	encryptIcf,
-	generateIcfFromQueues,
-	getIcfSanityError,
-	hexToBin,
-	inferIcfFilename,
-	listIcfGameIds,
-	xxdDecode,
-	xxdEncode
-} from "../services/icf"
+import { generateIcfFromQueues, listIcfGameIds } from "../services/icf"
 import type { IcfGenerationIssue } from "../services/icf"
+import {
+	applyIcfDumpChange,
+	applyIcfEntriesChange,
+	createDefaultIcfState,
+	createIcfSavePayload,
+	ICF_EDITOR_STORAGE_KEY,
+	importIcfData,
+	loadIcfBytes,
+	readStoredIcfState,
+	renderIcfDump,
+	serializeIcfState
+} from "../services/icfEditor"
+import type { IcfEditorState } from "../services/icfEditor"
 import type { SelectionQueues } from "../services/selectionQueue"
 
-const STORAGE_KEY = "fsdecryptGUI.icfEditor"
-const DEFAULT_ENTRIES = ["SXXXACA0"]
 const ENTRY_PLACEHOLDER = [
 	"SDEDACA0",
 	"SDED_1.34.00_20211102142042_2_1.33.00.app",
 	"SDED_A011_20200902105636_0.opt"
 ].join("\n")
 
-type EditorState = {
-	data: Uint8Array
-	entries: string[]
-	error: string
-	warning: string
-}
-
 type IcfViewProps = {
 	queues: SelectionQueues
 	isBusy: boolean
-}
-
-function cloneData(data: Uint8Array<ArrayBufferLike>) {
-	return new Uint8Array(data)
-}
-
-function encodeEntries(entries: string[], currentData = new Uint8Array(0x40)) {
-	const encoded = encodeIcfEntries(entries, currentData)
-	return typeof encoded[0] === "string" ? null : cloneData(encoded[0] as Uint8Array)
-}
-
-function defaultData() {
-	return encodeEntries(DEFAULT_ENTRIES) ?? new Uint8Array(0x40)
-}
-
-function getInitialState(): EditorState {
-	const fallback = defaultData()
-	const stored = window.localStorage.getItem(STORAGE_KEY)
-	if (!stored) {
-		return { data: fallback, entries: decodeIcfEntries(fallback), error: "", warning: "" }
-	}
-
-	const bytes = hexToBin(stored)
-	if (!bytes) {
-		return { data: fallback, entries: decodeIcfEntries(fallback), error: "Saved ICF state invalid", warning: "" }
-	}
-
-	return {
-		data: bytes,
-		entries: decodeIcfEntries(bytes),
-		error: "",
-		warning: getIcfSanityError(bytes) ?? ""
-	}
 }
 
 function statusClass(error: string, warning: string) {
@@ -82,18 +40,9 @@ function issueText(issue: IcfGenerationIssue) {
 	return `${issue.source}: ${issue.message}`
 }
 
-function entryValidationMessage(encoded: ReturnType<typeof encodeIcfEntries>) {
-	for (let index = 1; index < encoded.length; index++) {
-		if (typeof encoded[index] === "string") {
-			return `Line ${index + 1}: ${encoded[index]}`
-		}
-	}
-
-	return typeof encoded[0] === "string" ? `Line 1: ${encoded[0]}` : ""
-}
-
+/** Provides the ICF editor, import/export actions, and generation from current extraction queues. */
 export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
-	const [state, setState] = useState<EditorState>(() => getInitialState())
+	const [state, setState] = useState(() => readStoredIcfState(window.localStorage.getItem(ICF_EDITOR_STORAGE_KEY)))
 	const [entryText, setEntryText] = useState(() => state.entries.join("\n"))
 	const [entryScrollTop, setEntryScrollTop] = useState(0)
 	const [dumpValue, setDumpValue] = useState("")
@@ -109,42 +58,28 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 		[entryText]
 	)
 
-	const persist = useCallback((data: Uint8Array) => {
-		window.localStorage.setItem(STORAGE_KEY, binToHex(data))
+	const persistState = useCallback((nextState: IcfEditorState) => {
+		window.localStorage.setItem(ICF_EDITOR_STORAGE_KEY, serializeIcfState(nextState))
 	}, [])
 
 	const importData = useCallback(
 		(data: Uint8Array, nextStatus = "", warning = "") => {
-			const next = cloneData(data)
-			const entries = decodeIcfEntries(next)
-			setState({
-				data: next,
-				entries,
-				error: "",
-				warning
-			})
-			setEntryText(entries.join("\n"))
+			const nextState = importIcfData(data, warning)
+			setState(nextState)
+			setEntryText(nextState.entries.join("\n"))
 			setEntryScrollTop(0)
 			setStatus(nextStatus)
-			persist(next)
+			persistState(nextState)
 		},
-		[persist]
+		[persistState]
 	)
 
 	useEffect(() => {
 		let cancelled = false
 
 		async function renderDump() {
-			if (showDecryptedDump) {
-				if (!cancelled) {
-					setDumpValue(xxdEncode(state.data))
-				}
-				return
-			}
-
-			const encrypted = await encryptIcf(state.data)
 			if (!cancelled) {
-				setDumpValue(xxdEncode(encrypted ?? state.data))
+				setDumpValue(await renderIcfDump(state, showDecryptedDump))
 			}
 		}
 
@@ -154,41 +89,6 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 			cancelled = true
 		}
 	}, [showDecryptedDump, state.data])
-
-	const loadFromBytes = useCallback(
-		async (bytes: Uint8Array) => {
-			const importDecodable = (data: Uint8Array, label: string, warning = "") => {
-				const entries = decodeIcfEntries(data)
-				const encoded = encodeIcfEntries(entries, data)
-				const nextData = typeof encoded[0] === "string" ? data : cloneData(encoded[0] as Uint8Array)
-				importData(nextData, label, warning)
-			}
-
-			const directWarning = getIcfSanityError(bytes)
-			if (!directWarning) {
-				importData(bytes, "Loaded decrypted ICF.")
-				return
-			}
-
-			const decrypted = await decryptIcf(bytes)
-			if (decrypted && !getIcfSanityError(decrypted)) {
-				importData(decrypted, "Loaded encrypted ICF.")
-				return
-			}
-			if (decrypted && decrypted.length >= 0x40) {
-				importDecodable(decrypted, "Loaded encrypted ICF with warnings.", getIcfSanityError(decrypted) ?? directWarning)
-				return
-			}
-			if (bytes.length >= 0x40) {
-				importDecodable(bytes, "Loaded ICF with warnings.", directWarning)
-				return
-			}
-
-			setStatus("")
-			setState(current => ({ ...current, error: directWarning, warning: "" }))
-		},
-		[importData]
-	)
 
 	const handleLoad = useCallback(async () => {
 		setIsBusy(true)
@@ -201,47 +101,30 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 			if (!file) return
 
 			const buffer = await window.fsdecryptGUI.readRange(file.path, 0, file.size)
-			await loadFromBytes(new Uint8Array(buffer))
+			const loaded = await loadIcfBytes(new Uint8Array(buffer))
+			setState(loaded.state)
+			setEntryText(loaded.state.entries.join("\n"))
+			setEntryScrollTop(0)
+			setStatus(loaded.status)
+			persistState(loaded.state)
 		} catch (error) {
 			setStatus(error instanceof Error ? `Load failed: ${error.message}` : "Load failed.")
 		} finally {
 			setIsBusy(false)
 		}
-	}, [loadFromBytes])
+	}, [persistState])
 
 	const handleEntriesChange = useCallback(
 		(value: string) => {
 			setEntryText(value)
-			const entries = value
-				.split("\n")
-				.map(line => line.trim())
-
-			if (entries.length === 0) {
-				entries.push("")
-			}
-
-			const encoded = encodeIcfEntries(entries, state.data)
-			if (typeof encoded[0] === "string") {
-				setState(current => ({
-					...current,
-					entries,
-					error: entryValidationMessage(encoded)
-				}))
-				setStatus("")
-				return
-			}
-
-			const nextData = cloneData(encoded[0] as Uint8Array)
-			setState({
-				data: nextData,
-				entries,
-				error: "",
-				warning: ""
-			})
+			const nextState = applyIcfEntriesChange(state, value)
+			setState(nextState)
 			setStatus("")
-			persist(nextData)
+			if (!nextState.error) {
+				persistState(nextState)
+			}
 		},
-		[persist, state.data]
+		[persistState, state]
 	)
 
 	const handleEntriesBlur = useCallback(() => {
@@ -253,77 +136,41 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 	const handleDumpChange = useCallback(
 		async (value: string) => {
 			setDumpValue(value)
-			const decoded = xxdDecode(value)
-			if (!decoded) {
-				setState(current => ({ ...current, error: "Malformed Hex Dump" }))
-				setStatus("")
-				return
-			}
-
-			let data: Uint8Array<ArrayBufferLike> = decoded
-			if (!showDecryptedDump) {
-				const decrypted = await decryptIcf(decoded)
-				if (!decrypted) {
-					setState(current => ({ ...current, error: "Malformed Hex Dump" }))
-					setStatus("")
-					return
-				}
-				data = decrypted
-			} else if (getIcfSanityError(decoded)) {
-				const decrypted = await decryptIcf(decoded)
-				if (decrypted && !getIcfSanityError(decrypted)) {
-					data = decrypted
-				}
-			}
-
-			const entries = decodeIcfEntries(data)
-			setState({
-				data: cloneData(data),
-				entries,
-				error: "",
-				warning: getIcfSanityError(data) ?? ""
-			})
-			setEntryText(entries.join("\n"))
+			const nextState = await applyIcfDumpChange(state, value, showDecryptedDump)
+			setState(nextState)
+			setEntryText(nextState.entries.join("\n"))
 			setEntryScrollTop(0)
 			setStatus("")
 		},
-		[showDecryptedDump]
+		[showDecryptedDump, state]
 	)
 
 	const handleDumpBlur = useCallback(() => {
 		if (!state.error) {
-			persist(state.data)
+			persistState(state)
 		}
-	}, [persist, state.data, state.error])
+	}, [persistState, state])
 
 	const handleSave = useCallback(async () => {
 		setIsBusy(true)
 		try {
-			const encoded = encodeIcfEntries(state.entries, state.data)
-			if (typeof encoded[0] === "string") {
-				setState(current => ({ ...current, error: entryValidationMessage(encoded) }))
+			const payload = await createIcfSavePayload(state)
+			if (payload.error || !payload.data || !payload.encrypted || !payload.defaultName) {
+				setState(current => ({ ...current, error: payload.error || "Save failed" }))
 				setStatus("Save failed: entries need to be valid before writing ICF.")
 				return
 			}
 
-			const nextData = cloneData(encoded[0] as Uint8Array)
-			const encrypted = await encryptIcf(nextData)
-			if (!encrypted) {
-				setStatus("Save failed: could not encrypt ICF.")
-				return
-			}
-
-			const defaultName = inferIcfFilename(nextData) ?? "ICF1"
 			const savedPath = await window.fsdecryptGUI.saveBinary({
-				defaultName,
-				content: encrypted
+				defaultName: payload.defaultName,
+				content: payload.encrypted
 			})
 			if (savedPath) {
-				const entries = decodeIcfEntries(nextData)
-				setState({ data: nextData, entries, error: "", warning: "" })
-				setEntryText(entries.join("\n"))
+				const nextState = importIcfData(payload.data)
+				setState(nextState)
+				setEntryText(nextState.entries.join("\n"))
 				setEntryScrollTop(0)
-				persist(nextData)
+				persistState(nextState)
 				setStatus(`Saved ${savedPath}`)
 			}
 		} catch (error) {
@@ -331,7 +178,7 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 		} finally {
 			setIsBusy(false)
 		}
-	}, [persist, state.data, state.entries])
+	}, [persistState, state])
 
 	const handleGenerate = useCallback(() => {
 		if (!generation.ok) {
@@ -343,11 +190,10 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 	}, [generation, importData])
 
 	const handleReset = useCallback(() => {
-		const data = defaultData()
-		const entries = decodeIcfEntries(data)
-		window.localStorage.removeItem(STORAGE_KEY)
-		setState({ data, entries, error: "", warning: "" })
-		setEntryText(entries.join("\n"))
+		const nextState = createDefaultIcfState()
+		window.localStorage.removeItem(ICF_EDITOR_STORAGE_KEY)
+		setState(nextState)
+		setEntryText(nextState.entries.join("\n"))
 		setEntryScrollTop(0)
 		setStatus("")
 	}, [])

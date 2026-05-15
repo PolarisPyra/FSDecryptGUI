@@ -88,15 +88,20 @@ and avoid Electron or React imports.
 ### Important workflows
 
 - Selection metadata is built in
-  `src/renderer/app/services/selectionService.ts`. Use this for APP,
+  `src/renderer/app/services/layerChainAnalysis.ts`. Use this for APP,
   OPTION, and VHD chain grouping and warnings.
 - Selection queue mutation, input-folder partitioning, mode job counts, and
   blocking-warning summaries are owned by
   `src/renderer/app/services/selectionQueue.ts`.
+- Key Source validation is owned by
+  `src/renderer/app/services/keySource.ts`.
+- Extraction job planning is owned by
+  `src/renderer/app/services/extractionPlan.ts`, keeping the list of jobs
+  testable separately from execution side effects.
 - Exports are run through
   `src/renderer/app/services/extractionService.ts`. Batch completion
   notifications are emitted after the full batch finishes, not after each job.
-- Extraction batch planning, progress lifecycle, history records, cancellation,
+- Extraction batch execution, progress lifecycle, history records, cancellation,
   and completion notifications are owned by
   `src/renderer/app/services/extractionBatch.ts`.
 - OPTION-specific nested OPTION and VHD expansion is owned by
@@ -106,8 +111,11 @@ and avoid Electron or React imports.
   Electron IPC so the renderer never writes to disk directly.
 - Export history is persisted in
   `src/renderer/app/services/historyStorage.ts`.
-- Electron main-process IPC wiring stays in `src/electron/main.ts`; reusable
-  adapters live in `src/electron/chrome.ts`, `src/electron/dialogs.ts`, and
+- ICF binary rules are owned by `src/renderer/app/services/icf.ts`; ICF editor
+  state transitions are owned by `src/renderer/app/services/icfEditor.ts`.
+- Electron main-process lifecycle stays in `src/electron/main.ts`; reusable IPC
+  handler modules live under `src/electron/ipc/`. Reusable adapters live in
+  `src/electron/chrome.ts`, `src/electron/dialogs.ts`, and
   `src/electron/fileSystem.ts`.
 
 ### Change guidelines
@@ -118,7 +126,7 @@ and avoid Electron or React imports.
   shape definitions across browser and service files.
 - Keep generic helpers out of services. If a helper has no app state and no
   Electron dependency, it probably belongs in `base/common/`.
-- Validate with `pnpm typecheck` and `pnpm build` after renderer changes.
+- Validate with `pnpm typecheck`, `pnpm build`, and the Electron security analyzer after renderer or Electron changes.
 - Validate packaging-affecting changes with `pnpm dist:linux` on Linux.
 
 ## Troubleshooting

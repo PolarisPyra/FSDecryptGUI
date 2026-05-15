@@ -4,6 +4,12 @@ import path from "node:path"
 
 type OutputFolderWindow = BrowserWindow | undefined
 
+/**
+ * Checks whether a filesystem path already exists.
+ *
+ * @param target Resolved path to test.
+ * @returns True when stat succeeds.
+ */
 async function pathExists(target: string) {
 	try {
 		await stat(target)
@@ -13,6 +19,12 @@ async function pathExists(target: string) {
 	}
 }
 
+/**
+ * Converts IPC binary payloads into Node buffers without copying when possible.
+ *
+ * @param chunk ArrayBuffer or typed array sent from the preload bridge.
+ * @returns Buffer view suitable for FileHandle.write.
+ */
 function chunkBuffer(chunk: ArrayBuffer | Uint8Array) {
 	if (chunk instanceof ArrayBuffer) {
 		return Buffer.from(chunk)

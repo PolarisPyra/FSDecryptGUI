@@ -14,6 +14,12 @@ export type OutputFolderPlan = {
 	fileSegments: (path: string[]) => string[]
 }
 
+/**
+ * Converts VHD source metadata into result detail rows.
+ *
+ * @param result Opened VHD Chain NTFS source.
+ * @returns Details shown in the completion panel.
+ */
 export function vhdDetails(result: VhdNtfsSource) {
 	return [
 		{ label: "Layers", value: result.chain.length.toString() },
@@ -51,6 +57,16 @@ export function prepareOutputFolder(plan: OutputFolderPlan) {
 	return window.fsdecryptGUI.prepareOutputFolder(plan.rootPath, plan.outputSegments)
 }
 
+/**
+ * Creates the writer used by NTFS/exFAT extractors to write files through IPC.
+ *
+ * @param plan Output Folder plan for the current Extraction Job.
+ * @param getTotalBytes Reads the current total byte estimate.
+ * @param setProgress Updates UI progress percentage.
+ * @param signal Abort signal for cancellation.
+ * @param onBytesWritten Callback for byte accounting.
+ * @returns NTFS writer adapter backed by Electron output-folder IPC.
+ */
 export function createFolderWriter(
 	plan: OutputFolderPlan,
 	getTotalBytes: () => number,

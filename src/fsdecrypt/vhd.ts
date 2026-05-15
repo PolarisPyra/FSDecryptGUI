@@ -219,6 +219,7 @@ async function parseVhd(file: ReadableByteSource): Promise<VhdLayer> {
   };
 }
 
+/** Reads bytes from one VHD layer, returning zeros for unallocated sparse blocks. */
 async function readLayer(
   layer: VhdLayer,
   virtualOffset: number,
@@ -258,6 +259,7 @@ async function readLayer(
   return length;
 }
 
+/** Describes how much of the current sparse block is either owned by this child or inherited. */
 async function deltaRun(
   layer: VhdLayer,
   virtualOffset: number,
@@ -313,6 +315,7 @@ function isBitmapSectorOwned(bitmap: Uint8Array, sectorInBlock: number) {
   return ((bitmapByte >> bitmapBit) & 1) !== 0;
 }
 
+/** Reads a range that is known to be owned by a differencing layer. */
 async function readDeltaRun(
   layer: VhdLayer,
   virtualOffset: number,
@@ -333,6 +336,7 @@ async function readDeltaRun(
   return length;
 }
 
+/** Resolves a virtual read by walking child layers from newest to oldest, then falling back to the base. */
 async function readChain(
   layers: VhdLayer[],
   virtualSize: number,
@@ -457,6 +461,7 @@ export async function inspectVhdLayers(files: Array<File | ReadableByteSource>):
   }));
 }
 
+/** Orders selected VHD layers into one parent-child chain and reports any missing links. */
 function buildChain(layers: VhdLayer[]) {
   if (layers.length === 0) {
     throw new Error("Choose at least one APP or VHD chain layer");
@@ -519,6 +524,7 @@ function yieldToUi() {
   });
 }
 
+/** Exports the resolved VHD chain as a flat NTFS image. */
 export async function mergeVhdChain(
   files: Array<File | ReadableByteSource>,
   optionsOrProgress?: VhdMergeOptions | ((progress: number) => void),
@@ -576,6 +582,7 @@ export async function mergeVhdChain(
   };
 }
 
+/** Opens a linked VHD chain as a random-access NTFS source rooted at the detected NTFS partition. */
 export async function openVhdChainNtfsSource(
   files: Array<File | ReadableByteSource>,
   options: { onLog?: (message: string) => void } = {},

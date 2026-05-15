@@ -163,6 +163,7 @@ async function runLimited<T>(items: T[], concurrency: number, worker: (item: T) 
 	await Promise.all(workers)
 }
 
+/** Converts an exFAT cluster number into a byte offset after validating it is in range. */
 function clusterOffset(ctx: ExfatContext, cluster: number) {
 	if (cluster < EXFAT_CLUSTER_FIRST || cluster >= ctx.clusterCount + EXFAT_CLUSTER_FIRST) {
 		throw new Error(`Invalid exFAT cluster ${cluster}`)
@@ -171,6 +172,7 @@ function clusterOffset(ctx: ExfatContext, cluster: number) {
 	return ctx.clusterHeapOffset + (cluster - EXFAT_CLUSTER_FIRST) * ctx.clusterSize
 }
 
+/** Reads and validates the exFAT boot sector, then builds the extraction context. */
 async function readExfatBoot(source: ReadableByteSource): Promise<ExfatContext> {
 	const boot = await source.read(0, 512)
 	if (readAscii(boot.slice(3, 11)) !== EXFAT_OEM_ID) {
@@ -206,6 +208,7 @@ async function readFatEntry(ctx: ExfatContext, cluster: number) {
 	return readU32(entry, 0)
 }
 
+/** Resolves a file or directory cluster chain, handling contiguous no-FAT streams when flagged. */
 async function clusterChain(ctx: ExfatContext, firstCluster: number, size: number, noFatChain: boolean) {
 	if (firstCluster === 0 || size === 0) {
 		return []
@@ -265,6 +268,7 @@ async function readClusterStream(ctx: ExfatContext, firstCluster: number, size: 
 	return output
 }
 
+/** Exposes an exFAT cluster stream through the shared byte-source interface. */
 function sourceFromClusterStream(
 	ctx: ExfatContext,
 	name: string,
@@ -427,6 +431,7 @@ async function readRootDirectory(ctx: ExfatContext, firstCluster: number) {
 	return output
 }
 
+/** Recursively builds the exFAT extraction plan before writing any output. */
 async function planDirectory(
 	ctx: ExfatContext,
 	firstCluster: number,
@@ -509,6 +514,7 @@ async function extractPlan(
 	})
 }
 
+/** Extracts all exFAT contents into the supplied writer. */
 export async function extractExfatContents(
 	source: ReadableByteSource,
 	writer: ExfatExtractionWriter,

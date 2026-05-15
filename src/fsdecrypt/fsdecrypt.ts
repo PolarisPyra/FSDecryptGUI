@@ -240,6 +240,7 @@ function parseBootId(encryptedBootId: Uint8Array): FscryptBootId {
 	}
 }
 
+/** Recovers a custom file IV by decrypting the first encrypted block against an expected filesystem header. */
 function calculateFileIv(key: string, expectedHeader: string, firstPage: Uint8Array) {
 	const header = firstPage.slice(0, 16)
 	const output = new Uint8Array(header.length)
@@ -266,6 +267,7 @@ function encryptCbcNoPadding(data: Uint8Array, keyHex: string, ivHex: string) {
 	return output
 }
 
+/** Derives APM3-style game keys from the bundled seed and the four-character game id. */
 function deriveApm3GameKeys(gameId: string): GameKeys | undefined {
 	if (gameId.length !== 4) {
 		return undefined
@@ -390,6 +392,7 @@ async function customKeys(keyFile?: FscryptInput): Promise<GameKeys | undefined>
 	return { key, iv: bytesToHex(iv) }
 }
 
+/** Selects working key material by trying external, built-in, and derived candidates against the first page. */
 async function resolveKeys(bootId: FscryptBootId, firstPage: Uint8Array, keyFile?: FscryptInput): Promise<ResolvedGameKeys> {
 	if (bootId.containerType === FSCRYPT_CONTAINER_TYPE.OPTION) {
 		const externalKeys = await customKeys(keyFile)
@@ -464,6 +467,7 @@ export type FscryptSourceOptions = {
 	onLog?: (message: string) => void
 }
 
+/** Opens an fscrypt container as a random-access plaintext source without exporting the whole image first. */
 export async function openFscryptSource(
 	file: FscryptInput,
 	options: FscryptSourceOptions = {}
@@ -554,6 +558,7 @@ export async function openFscryptSource(
 	}
 }
 
+/** Decrypts a full fscrypt container to a Blob or caller-provided local output sink. */
 export async function decryptFscryptContainer(
 	file: FscryptInput,
 	keyFileOrOptions?: FscryptInput | FsdecryptOptions,
@@ -611,9 +616,10 @@ export async function decryptFscryptContainer(
 					),
 			outputSize: outputSizeNumber,
 			savedToFile: Boolean(outputSink)
-		}
+	}
 }
 
+/** Formats the numeric bootid container type used by logs and validation errors. */
 export function describeContainerType(containerType: FscryptContainerType) {
 	switch (containerType) {
 		case FSCRYPT_CONTAINER_TYPE.OS:

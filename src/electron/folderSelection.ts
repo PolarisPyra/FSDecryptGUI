@@ -6,6 +6,12 @@ import { readRendererConfig, updateConfig } from "./config.js"
 import type { ScannedInputFolder } from "./ipcTypes.js"
 import { pickedFile } from "./pickedFile.js"
 
+/**
+ * Broadcasts updated config to the renderer after menu-driven changes.
+ *
+ * @param window Target window whose renderer should receive the config.
+ * @param config Renderer config payload.
+ */
 function sendConfig(window: BrowserWindow, config: Awaited<ReturnType<typeof readRendererConfig>>) {
 	window.webContents.send("config:changed", config)
 }
@@ -14,6 +20,9 @@ function sendConfig(window: BrowserWindow, config: Awaited<ReturnType<typeof rea
  * Recursively scans a user-selected input folder and classifies files by the
  * extraction modes that understand them. Hidden folders/files are skipped so a
  * project checkout or mounted drive does not accidentally enqueue metadata.
+ *
+ * @param rootPath Folder selected by the user.
+ * @returns Classified APP, OPTION, and VHD file metadata.
  */
 export async function scanInputFolder(rootPath: string): Promise<ScannedInputFolder> {
 	const root = path.resolve(rootPath)
@@ -57,6 +66,12 @@ export async function scanInputFolder(rootPath: string): Promise<ScannedInputFol
 	return { rootPath: root, files }
 }
 
+/**
+ * Opens the output folder chooser and stores the selected Output Folder.
+ *
+ * @param window Window that should own the folder dialog.
+ * @returns The selected folder path, or undefined when cancelled.
+ */
 export async function chooseOutputFolder(window: BrowserWindow) {
 	const result = await dialog.showOpenDialog(window, {
 		title: "Select Output Folder",
@@ -72,6 +87,13 @@ export async function chooseOutputFolder(window: BrowserWindow) {
 	return config.outputRoot
 }
 
+/**
+ * Opens the input folder chooser, stores the root, and optionally broadcasts a scan.
+ *
+ * @param window Window that should own the folder dialog.
+ * @param notifyRenderer Whether to send the scan result back to the renderer.
+ * @returns The scan result, or undefined when cancelled.
+ */
 export async function chooseInputFolder(window: BrowserWindow, notifyRenderer = false) {
 	const result = await dialog.showOpenDialog(window, {
 		title: "Select Input Folder",

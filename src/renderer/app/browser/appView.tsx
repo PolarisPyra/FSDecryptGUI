@@ -56,6 +56,7 @@ function ChainLayerIcon({ state, role }: { state: "linked" | "missing" | "standa
 	return <CircleDot size={14} />
 }
 
+/** Switches between the three extraction workflows while preserving their queues. */
 function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolMode) => void }) {
 	const activeIndex = MODES.findIndex(item => item.mode === mode)
 	return (
@@ -74,6 +75,7 @@ function ModeToggle({ mode, onChange }: { mode: ToolMode; onChange: (mode: ToolM
 	)
 }
 
+/** Switches between extraction controls and the ICF editor screen. */
 function ScreenToggle({ screen, onChange }: { screen: AppScreen; onChange: (screen: AppScreen) => void }) {
 	const activeIndex = screen === "extract" ? 0 : 1
 	return (
@@ -91,6 +93,7 @@ function ScreenToggle({ screen, onChange }: { screen: AppScreen; onChange: (scre
 	)
 }
 
+/** Renders base APP/OS chains and raw VHD chains with inline chain health. */
 function MergeSelection({
 	groups,
 	isAnalyzing,
@@ -193,6 +196,7 @@ function MergeSelection({
 	)
 }
 
+/** Renders OPTION groups and their parent-child chain status. */
 function OptionSelection({
 	groups,
 	isAnalyzing,
@@ -269,6 +273,7 @@ function OptionSelection({
 	)
 }
 
+/** Shows recent export attempts and opens saved output for successful desktop runs. */
 function HistoryPanel({
 	history,
 	onOpen,
@@ -381,6 +386,7 @@ export type AppViewProps = {
 	onSaveLogs: () => void
 }
 
+/** Renders the application shell from state and callbacks owned by App. */
 export function AppView(props: AppViewProps) {
 	const ThemeIcon = props.theme === "dark" ? Sun : Moon
 	const nextTheme = props.theme === "dark" ? "light" : "dark"

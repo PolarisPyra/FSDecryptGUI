@@ -1,20 +1,21 @@
 import type { ReadableByteSource } from "../fsdecrypt/byte-source"
+import type {
+	ConfigPatch,
+	DecryptFscryptRangeRequest,
+	NotifyRequest,
+	PickedFile,
+	RendererConfig,
+	SaveBinaryRequest,
+	SaveTextRequest,
+	ScannedInputFolder
+} from "../electron/ipcTypes"
 
-export type PickedFile = {
-	path: string
-	name: string
-	size: number
-}
+export type { ConfigPatch, DecryptFscryptRangeRequest, NotifyRequest, PickedFile, RendererConfig, SaveBinaryRequest, SaveTextRequest, ScannedInputFolder }
 
-export type ScannedInputFolder = {
-	rootPath: string
-	files: {
-		apps: PickedFile[]
-		options: PickedFile[]
-		vhds: PickedFile[]
-	}
-}
-
+/**
+ * Renderer-facing preload surface. Every function maps to a named IPC handler
+ * instead of exposing raw `ipcRenderer` to the React app.
+ */
 export type ElectronApi = {
 	pickFiles: (options: {
 		title: string
@@ -43,51 +44,18 @@ export type ElectronApi = {
 	removeOutputPath: (rootPath: string, segments: string[]) => Promise<void>
 }
 
-export type RendererConfig = {
-	configPath: string
-	inputRoot?: string
-	outputRoot?: string
-	keyFile?: PickedFile
-}
-
-export type ConfigPatch = {
-	inputRoot?: string | null
-	outputRoot?: string | null
-	keyFilePath?: string | null
-}
-
-export type SaveTextRequest = {
-	defaultName: string
-	content: string
-}
-
-export type SaveBinaryRequest = {
-	defaultName: string
-	content: Uint8Array<ArrayBufferLike>
-}
-
-export type NotifyRequest = {
-	title: string
-	body: string
-}
-
-export type DecryptFscryptRangeRequest = {
-	filePath: string
-	dataOffset: number
-	outputSize: number
-	keyHex: string
-	ivHex: string
-	offset: number
-	length: number
-	pageSize: number
-}
-
 declare global {
 	interface Window {
 		fsdecryptGUI: ElectronApi
 	}
 }
 
+/**
+ * Adapts picked-file metadata into the byte-source interface used by fsdecrypt.
+ *
+ * @param file Renderer-safe file metadata returned by Electron dialogs/scans.
+ * @returns Byte source whose reads are delegated to validated Electron IPC.
+ */
 export function byteSourceFromPickedFile(file: PickedFile): ReadableByteSource {
 	return {
 		name: file.name,

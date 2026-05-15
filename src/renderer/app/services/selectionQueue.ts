@@ -2,10 +2,13 @@ import type { ReadableByteSource } from "../../../fsdecrypt/byte-source"
 import type { PickedFile, ScannedInputFolder } from "../../electron-api"
 import { MODES } from "../common/modes"
 import type { BaseSelectionGroup, MergeSelectionGroup, OptionSelectionGroup, ToolMode } from "../common/appTypes"
-import { appendPickedFiles, buildBaseGroups, buildMergeGroups, buildOptionGroups, validateKeyFile } from "./selectionService"
+import { buildBaseGroups, buildMergeGroups, buildOptionGroups } from "./layerChainAnalysis"
+import { validateKeyFile } from "./keySource"
 
 export { validateKeyFile }
 
+// Selection Queue mutation is centralized here so App.tsx does not need to know
+// how Base, Option, and Merge store their analyzed Selection Groups.
 export type RunScope = "all" | ToolMode
 
 export type SelectionQueues = {
@@ -31,6 +34,13 @@ export function emptySelectionQueues(): SelectionQueues {
 	}
 }
 
+/**
+ * Preserves a user's include/exclude choices after expensive queue re-analysis.
+ *
+ * @param nextGroups Freshly analyzed Selection Groups.
+ * @param previousGroups Prior groups with selected flags.
+ * @returns Fresh groups with matching selected flags restored.
+ */
 function preserveGroupSelection<T extends { id: string; selected: boolean }>(nextGroups: T[], previousGroups: T[] = []) {
 	const previousSelection = new Map(previousGroups.map(group => [group.id, group.selected]))
 	return nextGroups.map(group => ({
@@ -39,6 +49,72 @@ function preserveGroupSelection<T extends { id: string; selected: boolean }>(nex
 	}))
 }
 
+/**
+ * Appends picked files while deduplicating by path.
+ *
+ * @param current Existing Selection Queue files.
+ * @param picked Newly picked files.
+ * @returns A stable append-only list without duplicate paths.
+ */
+export function appendPickedFiles(current: PickedFile[], picked: PickedFile[]) {
+	const merged = [...current]
+	const seen = new Set(current.map(file => file.path))
+	for (const file of picked) {
+		if (seen.has(file.path)) continue
+		seen.add(file.path)
+		merged.push(file)
+	}
+
+	return merged
+}
+
+/**
+ * Toggles one analyzed Selection Group in one mode.
+ *
+ * @param queues Current Selection Queues.
+ * @param mode Mode whose group should change.
+ * @param groupId Stable group identifier.
+ * @param selected Whether the group should be included in extraction.
+ * @returns Updated Selection Queues.
+ */
+export function selectSelectionGroup(queues: SelectionQueues, mode: ToolMode, groupId: string, selected: boolean): SelectionQueues {
+	if (mode === "option") {
+		return { ...queues, option: { ...queues.option, groups: queues.option.groups.map(group => (group.id === groupId ? { ...group, selected } : group)) } }
+	}
+
+	if (mode === "vhd") {
+		return { ...queues, vhd: { ...queues.vhd, groups: queues.vhd.groups.map(group => (group.id === groupId ? { ...group, selected } : group)) } }
+	}
+
+	return { ...queues, container: { ...queues.container, groups: queues.container.groups.map(group => (group.id === groupId ? { ...group, selected } : group)) } }
+}
+
+/**
+ * Toggles every Selection Group in a mode at once.
+ *
+ * @param queues Current Selection Queues.
+ * @param mode Mode whose groups should change.
+ * @param selected Whether every group should be included.
+ * @returns Updated Selection Queues.
+ */
+export function selectModeSelectionGroups(queues: SelectionQueues, mode: ToolMode, selected: boolean): SelectionQueues {
+	if (mode === "option") {
+		return { ...queues, option: { ...queues.option, groups: queues.option.groups.map(group => ({ ...group, selected })) } }
+	}
+
+	if (mode === "vhd") {
+		return { ...queues, vhd: { ...queues.vhd, groups: queues.vhd.groups.map(group => ({ ...group, selected })) } }
+	}
+
+	return { ...queues, container: { ...queues.container, groups: queues.container.groups.map(group => ({ ...group, selected })) } }
+}
+
+/**
+ * Counts selected Extraction Jobs by mode.
+ *
+ * @param queues Current Selection Queues.
+ * @returns Job counts keyed by mode.
+ */
 export function selectionJobCounts(queues: SelectionQueues): Record<ToolMode, number> {
 	return {
 		container: queues.container.groups.filter(group => group.selected).reduce((count, group) => count + group.files.length, 0),
@@ -47,6 +123,12 @@ export function selectionJobCounts(queues: SelectionQueues): Record<ToolMode, nu
 	}
 }
 
+/**
+ * Reports whether each mode currently has a selected Blocking Warning.
+ *
+ * @param queues Current Selection Queues.
+ * @returns Warning state keyed by mode.
+ */
 export function selectionWarningState(queues: SelectionQueues): Record<ToolMode, boolean> {
 	return {
 		container: queues.container.groups.some(group => group.selected && group.warning),
@@ -55,6 +137,14 @@ export function selectionWarningState(queues: SelectionQueues): Record<ToolMode,
 	}
 }
 
+/**
+ * Computes the active run scope, job count, and Blocking Warning state.
+ *
+ * @param queues Current Selection Queues.
+ * @param mode Active user-facing mode.
+ * @param runAllModes Whether the all-mode toggle is enabled.
+ * @returns Run readiness facts consumed by the app controller.
+ */
 export function selectionSummary(queues: SelectionQueues, mode: ToolMode, runAllModes: boolean) {
 	const jobCounts = selectionJobCounts(queues)
 	const warningState = selectionWarningState(queues)
@@ -75,6 +165,17 @@ export function selectionSummary(queues: SelectionQueues, mode: ToolMode, runAll
 	}
 }
 
+/**
+ * Converts a scanned input folder into Base, Option, and Merge Selection Queues.
+ *
+ * APPs with child layers or accompanying raw VHD Layers are routed to Merge,
+ * while standalone APPs stay in Base.
+ *
+ * @param scan Classified files returned by the main process scanner.
+ * @param keySource Optional Custom Key File source.
+ * @param currentMode Current mode to preserve when no files are found.
+ * @returns Next queues, preferred mode, all-mode toggle state, and log text.
+ */
 export async function analyzeInputScan(
 	scan: ScannedInputFolder,
 	keySource: ReadableByteSource | undefined,
@@ -114,6 +215,15 @@ export async function analyzeInputScan(
 	}
 }
 
+/**
+ * Adds files to the current mode's Selection Queue and re-analyzes that mode.
+ *
+ * @param queues Current Selection Queues.
+ * @param mode Target mode.
+ * @param files Newly picked files.
+ * @param keySource Optional Custom Key File source.
+ * @returns Updated queues with prior group selections preserved.
+ */
 export async function appendToSelectionQueue(
 	queues: SelectionQueues,
 	mode: ToolMode,
@@ -146,6 +256,15 @@ export async function appendToSelectionQueue(
 	}
 }
 
+/**
+ * Removes one file from a mode's Selection Queue and re-analyzes that mode.
+ *
+ * @param queues Current Selection Queues.
+ * @param mode Target mode.
+ * @param path File path to remove.
+ * @param keySource Optional Custom Key File source.
+ * @returns Updated queues with prior group selections preserved where possible.
+ */
 export async function removeFromSelectionQueue(
 	queues: SelectionQueues,
 	mode: ToolMode,
@@ -178,6 +297,13 @@ export async function removeFromSelectionQueue(
 	}
 }
 
+/**
+ * Rebuilds all analyzed Selection Groups after Key Source changes.
+ *
+ * @param queues Current Selection Queues.
+ * @param keySource Optional Custom Key File source.
+ * @returns Updated queues with previous group selections preserved.
+ */
 export async function refreshSelectionQueues(queues: SelectionQueues, keySource: ReadableByteSource | undefined): Promise<SelectionQueues> {
 	const [baseGroups, optionGroups, mergeGroups] = await Promise.all([
 		queues.container.files.length > 0 ? buildBaseGroups(queues.container.files, keySource) : Promise.resolve([]),
@@ -192,6 +318,14 @@ export async function refreshSelectionQueues(queues: SelectionQueues, keySource:
 	}
 }
 
+/**
+ * Moves a Base Selection Group into Merge so parent-child APP Chains extract correctly.
+ *
+ * @param queues Current Selection Queues.
+ * @param group Base group to move.
+ * @param keySource Optional Custom Key File source.
+ * @returns Queues with the group removed from Base and appended to Merge.
+ */
 export async function moveBaseGroupToMergeQueue(
 	queues: SelectionQueues,
 	group: BaseSelectionGroup,

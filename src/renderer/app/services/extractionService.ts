@@ -17,6 +17,17 @@ export type ExtractionServiceContext = {
 
 export type ElapsedDetails = () => CompletedResult["details"]
 
+/**
+ * Extracts an already-open NTFS source into an Output Folder.
+ *
+ * @param context Shared extraction dependencies and progress callbacks.
+ * @param ntfsSource Source produced from APP or VHD Chain resolution.
+ * @param folderName Desired Output Folder name.
+ * @param getExtraDetails Function that supplies elapsed/result details.
+ * @param signal Abort signal for cancellation.
+ * @param onBytesWritten Callback for progress accounting.
+ * @returns Completed extraction result for history and UI display.
+ */
 async function extractNtfsSource(
 	context: ExtractionServiceContext,
 	ntfsSource: VhdNtfsSource,
@@ -52,6 +63,16 @@ async function extractNtfsSource(
 	}
 }
 
+/**
+ * Runs a Base Extraction Job from one standalone APP.
+ *
+ * @param context Shared extraction dependencies and progress callbacks.
+ * @param file Selected APP.
+ * @param elapsedDetails Function that supplies elapsed/result details.
+ * @param signal Abort signal for cancellation.
+ * @param onBytesWritten Callback for progress accounting.
+ * @returns Completed extraction result.
+ */
 export async function runBaseExport(
 	context: ExtractionServiceContext,
 	file: PickedFile,
@@ -74,6 +95,16 @@ export async function runBaseExport(
 	return extractNtfsSource(context, ntfsSource, stripExtension(file.name), elapsedDetails, signal, onBytesWritten)
 }
 
+/**
+ * Runs a Merge Extraction Job from APPs and/or raw VHD Layers.
+ *
+ * @param context Shared extraction dependencies and progress callbacks.
+ * @param group Selected Merge Selection Group.
+ * @param elapsedDetails Function that supplies elapsed/result details.
+ * @param signal Abort signal for cancellation.
+ * @param onBytesWritten Callback for progress accounting.
+ * @returns Completed extraction result.
+ */
 export async function runMergeExport(
 	context: ExtractionServiceContext,
 	group: MergeSelectionGroup,

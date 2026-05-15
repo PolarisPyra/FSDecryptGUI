@@ -1,15 +1,15 @@
 {
 	"name": "fsdecrypt-gui",
 	"private": true,
-	"version": "0.1.23",
+	"version": "0.1.24",
 	"description": "Desktop GUI for extracting fscrypt APP, option, and VHD chain contents.",
 	"author": "PolarisPyra",
 	"type": "module",
 	"main": "dist-electron/main.js",
 	"scripts": {
-		"dev": "concurrently -k -n vite,electron-ts,electron \"vite --host 127.0.0.1 --port 5173 --strictPort\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on dist-electron/main.js http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+		"dev": "concurrently -k -n vite,electron-ts,electron \"vite --host 127.0.0.1 --port 5173 --strictPort\" \"node scripts/build-electron.mjs --watch\" \"wait-on dist-electron/main.js http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
 		"build": "node scripts/build-electron.mjs && vite build",
-		"typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+		"typecheck": "tsc --noEmit",
 		"package": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --dir",
 		"dist": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder",
 		"dist:linux": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --linux AppImage --publish never",

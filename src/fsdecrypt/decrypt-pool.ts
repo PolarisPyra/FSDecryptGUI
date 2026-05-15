@@ -30,6 +30,7 @@ type QueuedTask = {
 	reject: (error: Error) => void
 }
 
+/** Minimal task queue for browser Worker-based page decryption. */
 class DecryptWorkerPool {
 	private nextId = 1
 	private readonly workers: WorkerSlot[]
@@ -98,6 +99,7 @@ class DecryptWorkerPool {
 
 let pool: DecryptWorkerPool | undefined
 
+/** Returns the configured browser worker count; zero keeps decryption inline. */
 function workerCount() {
 	return 0
 }
@@ -123,10 +125,12 @@ function transferableBuffer(bytes: Uint8Array): ArrayBuffer {
 	return copy.buffer
 }
 
+/** Reports the active worker count so the UI can log the selected decrypt path. */
 export function getDecryptWorkerCount() {
 	return decryptPool()?.size ?? 0
 }
 
+/** Decrypts fscrypt pages, using workers only when the pool is enabled and the range is large enough. */
 export async function decryptFscryptPages(
 	keyHex: string,
 	fileIv: Uint8Array,

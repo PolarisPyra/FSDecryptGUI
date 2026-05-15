@@ -13,6 +13,12 @@ export type ReadableByteSource = {
 	}) => Promise<Uint8Array>
 }
 
+/**
+ * Adapts browser File objects to the shared random-access byte-source interface.
+ *
+ * @param file Browser File object.
+ * @returns Readable byte source backed by `File.slice`.
+ */
 export function byteSourceFromFile(file: File): ReadableByteSource {
 	return {
 		name: file.name,

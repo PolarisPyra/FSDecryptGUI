@@ -1,22 +1,13 @@
 import type { ReadableByteSource } from "../../../fsdecrypt/byte-source"
 import { isAbortError } from "../../base/common/cancellation"
 import { formatDuration } from "../../base/common/format"
-import { stripExtension } from "../../base/common/path"
-import type { ActiveJob, CompletedResult, ExportHistoryItem, RunStats, ToolMode } from "../common/appTypes"
+import type { ActiveJob, CompletedResult, ExportHistoryItem, RunStats } from "../common/appTypes"
+import { createExtractionJobs } from "./extractionPlan"
 import type { RunScope, SelectionQueues } from "./selectionQueue"
-import { runBaseExport, runMergeExport } from "./extractionService"
-import { runOptionExport } from "./optionExtraction"
 
 type HistoryInput = Omit<ExportHistoryItem, "id" | "completedAt">
 
-export type ExtractionBatchRequest = {
-	queues: SelectionQueues
-	runScope: RunScope
-	scopeLabel: string
-	outputRoot: string
-	keySource?: ReadableByteSource
-	signal: AbortSignal
-	startedAt: number
+export type ExtractionBatchEvents = {
 	appendLog: (message: string) => void
 	addHistory: (item: HistoryInput) => void
 	notifyUser: (title: string, body: string) => Promise<void>
@@ -26,73 +17,69 @@ export type ExtractionBatchRequest = {
 	setRunStats: (updater: (current: RunStats) => RunStats) => void
 }
 
+export type ExtractionBatchRequest = {
+	queues: SelectionQueues
+	runScope: RunScope
+	scopeLabel: string
+	outputRoot: string
+	keySource?: ReadableByteSource
+	signal: AbortSignal
+	startedAt: number
+	events: ExtractionBatchEvents
+}
+
+/**
+ * Executes an Extraction Batch and emits UI events for progress/history/results.
+ *
+ * @param request Queue state, run scope, output folder, key source, abort signal, and event sink.
+ */
 export async function runExtractionBatch(request: ExtractionBatchRequest) {
+	const events = request.events
 	const elapsedDetails = (): CompletedResult["details"] => {
 		const value = formatDuration(performance.now() - request.startedAt)
 		return [{ label: "Elapsed", value }]
 	}
 	const noteBytesWritten = (bytes: number) => {
-		request.setRunStats(current => ({
+		events.setRunStats(current => ({
 			...current,
 			bytesWritten: current.bytesWritten + bytes,
 			elapsedMs: performance.now() - request.startedAt
 		}))
 	}
-	const selectedBaseFiles = request.queues.container.groups.filter(group => group.selected).flatMap(group => group.files)
-	const selectedOptionFiles = request.queues.option.groups.filter(group => group.selected).flatMap(group => group.files)
-	const selectedMergeGroups = request.queues.vhd.groups.filter(group => group.selected)
 	const extractionContext = {
 		outputRoot: request.outputRoot,
 		keySource: request.keySource,
-		optionFiles: selectedOptionFiles,
-		appendLog: request.appendLog,
-		setProgress: request.setProgress,
-		setRunStats: request.setRunStats
+		optionFiles: request.queues.option.groups.filter(group => group.selected).flatMap(group => group.files),
+		appendLog: events.appendLog,
+		setProgress: events.setProgress,
+		setRunStats: events.setRunStats
 	}
-	const baseJobs = selectedBaseFiles.map(file => ({
-		mode: "container" as ToolMode,
-		label: stripExtension(file.name),
-		sources: [file.name],
-		run: () => runBaseExport(extractionContext, file, elapsedDetails, request.signal, noteBytesWritten)
-	}))
-	const optionJobs = selectedOptionFiles.map(file => ({
-		mode: "option" as ToolMode,
-		label: stripExtension(file.name),
-		sources: [file.name],
-		run: () => runOptionExport(extractionContext, file, elapsedDetails, request.signal, noteBytesWritten)
-	}))
-	const mergeJobs = selectedMergeGroups.map(group => ({
-		mode: "vhd" as ToolMode,
-		label: group.label,
-		sources: group.files.map(file => file.name),
-		run: () => runMergeExport(extractionContext, group, elapsedDetails, request.signal, noteBytesWritten)
-	}))
-	const jobs =
-		request.runScope === "all"
-			? [...baseJobs, ...optionJobs, ...mergeJobs]
-			: request.runScope === "vhd"
-				? mergeJobs
-				: request.runScope === "option"
-					? optionJobs
-					: baseJobs
+	const jobs = createExtractionJobs({
+		queues: request.queues,
+		runScope: request.runScope,
+		context: extractionContext,
+		elapsedDetails,
+		signal: request.signal,
+		onBytesWritten: noteBytesWritten
+	})
 
 	try {
-		request.appendLog(`Starting ${request.scopeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
+		events.appendLog(`Starting ${request.scopeLabel} batch with ${jobs.length.toLocaleString()} export(s)`)
 		let successfulJobs = 0
 		let failedJobs = 0
 
 		for (let index = 0; index < jobs.length; index++) {
 			const job = jobs[index]
 			const jobStartedAt = performance.now()
-			request.setProgress(0)
-			request.setActiveJob({ index: index + 1, total: jobs.length, label: job.label })
-			request.appendLog(`[${index + 1}/${jobs.length}] Exporting ${job.label}`)
+			events.setProgress(0)
+			events.setActiveJob({ index: index + 1, total: jobs.length, label: job.label })
+			events.appendLog(`[${index + 1}/${jobs.length}] Exporting ${job.label}`)
 
 			try {
 				const nextResult = await job.run()
-				request.setResult(nextResult)
-				request.setProgress(100)
-				request.addHistory({
+				events.setResult(nextResult)
+				events.setProgress(100)
+				events.addHistory({
 					status: "success",
 					mode: job.mode,
 					label: job.label,
@@ -106,7 +93,7 @@ export async function runExtractionBatch(request: ExtractionBatchRequest) {
 				successfulJobs += 1
 			} catch (error) {
 				if (isAbortError(error)) {
-					request.addHistory({
+					events.addHistory({
 						status: "cancelled",
 						mode: job.mode,
 						label: job.label,
@@ -118,9 +105,9 @@ export async function runExtractionBatch(request: ExtractionBatchRequest) {
 				}
 
 				const message = error instanceof Error ? error.message : "fsdecrypt failed"
-				request.appendLog(`ERROR: ${job.label}: ${message}`)
+				events.appendLog(`ERROR: ${job.label}: ${message}`)
 				failedJobs += 1
-				request.addHistory({
+				events.addHistory({
 					status: "failed",
 					mode: job.mode,
 					label: job.label,
@@ -131,22 +118,22 @@ export async function runExtractionBatch(request: ExtractionBatchRequest) {
 			}
 		}
 
-		request.appendLog("Done")
+		events.appendLog("Done")
 		if (failedJobs > 0) {
-			await request.notifyUser("fsdecryptGUI finished with errors", `${successfulJobs}/${jobs.length} export(s) completed. ${failedJobs} failed.`)
+			await events.notifyUser("fsdecryptGUI finished with errors", `${successfulJobs}/${jobs.length} export(s) completed. ${failedJobs} failed.`)
 		} else {
-			await request.notifyUser("fsdecryptGUI extraction complete", `${successfulJobs}/${jobs.length} export(s) completed.`)
+			await events.notifyUser("fsdecryptGUI extraction complete", `${successfulJobs}/${jobs.length} export(s) completed.`)
 		}
 	} catch (error) {
 		console.error(error)
 		if (isAbortError(error)) {
-			request.setProgress(0)
-			request.appendLog("Cancelled")
-			await request.notifyUser("fsdecryptGUI extraction cancelled", "The current extraction was cancelled.")
+			events.setProgress(0)
+			events.appendLog("Cancelled")
+			await events.notifyUser("fsdecryptGUI extraction cancelled", "The current extraction was cancelled.")
 			return
 		}
 
-		request.appendLog(error instanceof Error ? `ERROR: ${error.message}` : "ERROR: fsdecrypt failed")
-		await request.notifyUser("fsdecryptGUI extraction failed", error instanceof Error ? error.message : "fsdecrypt failed")
+		events.appendLog(error instanceof Error ? `ERROR: ${error.message}` : "ERROR: fsdecrypt failed")
+		await events.notifyUser("fsdecryptGUI extraction failed", error instanceof Error ? error.message : "fsdecrypt failed")
 	}
 }

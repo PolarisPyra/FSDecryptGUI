@@ -8,7 +8,7 @@ import { type PickedFile, byteSourceFromPickedFile } from "../../electron-api"
 import type { CompletedResult, OptionVhdSource } from "../common/appTypes"
 import { createFolderWriter, createOutputFolderPlan, prepareOutputFolder } from "./extractionWriter"
 import type { ElapsedDetails, ExtractionServiceContext } from "./extractionService"
-import { filesystemFromBootSector } from "./selectionService"
+import { filesystemFromBootSector } from "./layerChainAnalysis"
 
 type NestedTotals = {
 	files: number
@@ -16,6 +16,13 @@ type NestedTotals = {
 	bytes: number
 }
 
+/**
+ * Prepends a path prefix to every write operation from a nested extraction.
+ *
+ * @param baseWriter Writer that owns the real Output Folder.
+ * @param prefix Path segments to prepend.
+ * @returns Writer that remaps nested paths under the prefix.
+ */
 function prefixWriter(baseWriter: NtfsExtractionWriter, prefix: string[]): NtfsExtractionWriter {
 	return {
 		createDirectory: path => baseWriter.createDirectory([...prefix, ...path]),
@@ -23,6 +30,16 @@ function prefixWriter(baseWriter: NtfsExtractionWriter, prefix: string[]): NtfsE
 	}
 }
 
+/**
+ * Runs an Option Extraction Job, expanding nested OPTIONs and VHD Layers.
+ *
+ * @param context Shared extraction dependencies and progress callbacks.
+ * @param file Selected OPTION.
+ * @param elapsedDetails Function that supplies elapsed/result details.
+ * @param signal Abort signal for cancellation.
+ * @param onBytesWritten Callback for progress accounting.
+ * @returns Completed extraction result.
+ */
 export async function runOptionExport(
 	context: ExtractionServiceContext,
 	file: PickedFile,

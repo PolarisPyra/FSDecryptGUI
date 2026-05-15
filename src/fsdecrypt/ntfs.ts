@@ -205,6 +205,7 @@ async function runLimited<T>(items: T[], concurrency: number, worker: (item: T) 
 	await Promise.all(workers)
 }
 
+/** Reads and validates the NTFS boot sector, including cluster and file-record geometry. */
 async function readNtfsBoot(source: ReadableByteSource): Promise<NtfsBoot> {
 	const boot = await source.read(0, 512)
 	if (readAscii(boot.slice(3, 11)) !== NTFS_OEM_ID) {
@@ -225,6 +226,7 @@ async function readNtfsBoot(source: ReadableByteSource): Promise<NtfsBoot> {
 	return { bytesPerSector, clusterSize, mftOffset: mftLcn * clusterSize, recordSize }
 }
 
+/** Applies NTFS update-sequence fixups so multi-sector FILE/INDX records can be parsed safely. */
 function applyFixup(record: Uint8Array, bytesPerSector: number, magic: string) {
 	if (readAscii(record.slice(0, 4)) !== magic) {
 		throw new Error(`Invalid NTFS ${magic} record`)
@@ -250,6 +252,7 @@ function applyFixup(record: Uint8Array, bytesPerSector: number, magic: string) {
 	return record
 }
 
+/** Parses an NTFS non-resident runlist into logical cluster runs. */
 function parseRuns(bytes: Uint8Array) {
 	const runs: NtfsRun[] = []
 	let offset = 0
@@ -508,6 +511,7 @@ async function readDirectoryEntries(ctx: NtfsContext, recordNumber: number) {
 	return entries
 }
 
+/** Exposes resident and non-resident NTFS data attributes through the common byte-source API. */
 function sourceFromDataAttribute(
 	name: string,
 	source: ReadableByteSource,
@@ -541,6 +545,7 @@ function sourceFromDataAttribute(
 	}
 }
 
+/** Wraps an APP container's internal VHD file as a readable source with its fscrypt metadata attached. */
 function dataSourceFromAttribute(
 	appName: string,
 	bootId: FscryptBootId,
@@ -572,6 +577,7 @@ function isDirectoryRecord(record: Uint8Array) {
 	return (readU16(record, 0x16) & NTFS_FILE_RECORD_DIRECTORY) !== 0
 }
 
+/** Recursively builds a filesystem extraction plan before any files are written. */
 async function planDirectory(
 	ctx: NtfsContext,
 	recordNumber: number,
@@ -716,6 +722,7 @@ async function scanDirectoryBytes(
 	return totalBytes
 }
 
+/** Extracts all user-visible NTFS contents into the supplied writer. */
 export async function extractNtfsContents(
 	source: ReadableByteSource,
 	writer: NtfsExtractionWriter,
@@ -742,6 +749,7 @@ export async function extractNtfsContents(
 	return result
 }
 
+/** Scans NTFS contents and returns the total byte count without writing files. */
 export async function scanNtfsBytes(
 	source: ReadableByteSource,
 	options: NtfsExtractionOptions = {}
@@ -754,6 +762,7 @@ export async function scanNtfsBytes(
 	return totalBytes
 }
 
+/** Opens an APP/OS fscrypt container and returns the embedded internal_*.vhd byte source. */
 export async function extractInternalVhdSource(
 	appFile: FscryptInput,
 	options: { keyFile?: FscryptInput; onLog?: (message: string) => void } = {}
@@ -786,6 +795,7 @@ export async function extractInternalVhdSource(
 	return dataSourceFromAttribute(appFile.name, plaintext.bootId, internalName, plaintext, ctx.boot, parseDataAttribute(record, dataAttr.offset), entry.size)
 }
 
+/** Converts multiple APP/OS containers to sorted internal VHD sources for merge/export workflows. */
 export async function appContainersToVhdSources(
 	files: FscryptInput[],
 	options: { keyFile?: FscryptInput; onLog?: (message: string) => void } = {}

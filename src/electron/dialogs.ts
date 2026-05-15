@@ -7,6 +7,13 @@ import { readRendererConfig } from "./config.js"
 import type { PickFileOptions, SaveBinaryRequest, SaveTextRequest } from "./ipcTypes.js"
 import { pickedFile } from "./pickedFile.js"
 
+/**
+ * Opens a native file picker and maps selected paths into renderer-safe metadata.
+ *
+ * @param window Window that should own the dialog, if one is available.
+ * @param options Validated dialog title, filters, and multi-select flag.
+ * @returns Metadata for every selected file, or an empty array when cancelled.
+ */
 export async function pickFiles(window: BrowserWindow | undefined, options: PickFileOptions) {
 	const dialogOptions: OpenDialogOptions = {
 		title: options.title,
@@ -22,6 +29,11 @@ export async function pickFiles(window: BrowserWindow | undefined, options: Pick
 	return Promise.all(result.filePaths.map(pickedFile))
 }
 
+/**
+ * Opens the app config directory in the platform file manager.
+ *
+ * @returns A promise that rejects when the shell refuses to open the folder.
+ */
 export async function openConfigFolder() {
 	const config = await readRendererConfig()
 	const folder = path.dirname(config.configPath)
@@ -32,6 +44,13 @@ export async function openConfigFolder() {
 	}
 }
 
+/**
+ * Saves renderer log text through a native save dialog.
+ *
+ * @param window Window that should own the dialog, if one is available.
+ * @param request Validated text-save request.
+ * @returns Saved path, or undefined when cancelled.
+ */
 export async function saveText(window: BrowserWindow | undefined, request: SaveTextRequest) {
 	const dialogOptions: SaveDialogOptions = {
 		title: "Save Log",
@@ -51,6 +70,13 @@ export async function saveText(window: BrowserWindow | undefined, request: SaveT
 	return result.filePath
 }
 
+/**
+ * Saves binary ICF output through a native save dialog.
+ *
+ * @param window Window that should own the dialog, if one is available.
+ * @param request Validated binary-save request.
+ * @returns Saved path, or undefined when cancelled.
+ */
 export async function saveBinary(window: BrowserWindow | undefined, request: SaveBinaryRequest) {
 	const dialogOptions: SaveDialogOptions = {
 		title: "Save ICF",
