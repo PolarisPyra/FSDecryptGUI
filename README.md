@@ -33,10 +33,11 @@ pnpm version patch
 git push --follow-tags
 ```
 
-The release workflow builds Linux AppImage, macOS DMG, and Windows NSIS
-installers on native GitHub-hosted runners, then uploads them to the GitHub
-Release named `v<package version>`. The workflow can also be run manually from
-the Actions tab for the current `package.json` version.
+The release workflow builds Linux AppImage, macOS DMGs for Intel x64 and Apple
+Silicon arm64, and Windows NSIS installers on native GitHub-hosted runners,
+then uploads them to the GitHub Release named `v<package version>`. The
+workflow can also be run manually from the Actions tab for the current
+`package.json` version.
 
 ## Notes
 

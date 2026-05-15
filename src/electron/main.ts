@@ -1,21 +1,11 @@
-import { app, BrowserWindow, Notification, clipboard, ipcMain, shell } from "electron"
-import { mkdir } from "node:fs/promises"
+import { app, BrowserWindow, Notification, clipboard, ipcMain } from "electron"
 
 import { ConfigPatch, readRendererConfig, updateConfig } from "./config.js"
 import { createWindow, focusedWindow, installMenu } from "./chrome.js"
-import { chooseInputFolder, chooseOutputFolder, openConfigFolder, pickFiles, saveBinary, saveText, scanInputFolder } from "./dialogs.js"
-import {
-	closeInputHandles,
-	closeOutputHandle,
-	closeOutputHandles,
-	decryptFscryptRange,
-	ensureOutputDirectory,
-	prepareOutputFolder,
-	readInputRange,
-	removeOutputPath,
-	safeOutputPath,
-	writeOutputFileChunk
-} from "./fileSystem.js"
+import { openConfigFolder, pickFiles, saveBinary, saveText } from "./dialogs.js"
+import { closeInputHandles, decryptFscryptRange, readInputRange } from "./fileSystem.js"
+import { outputFolders } from "./folderManager.js"
+import { chooseInputFolder, chooseOutputFolder, scanInputFolder } from "./folderSelection.js"
 import type { DecryptFscryptRangeRequest, OutputFolderRequest, SaveBinaryRequest, SaveTextRequest, WriteFileRequest } from "./ipcTypes.js"
 
 app.setName("fsdecryptGUI")
@@ -84,16 +74,11 @@ ipcMain.handle("app:notify", async (_event, request: { title: string; body: stri
 
 ipcMain.handle("fs:prepareOutputFolder", async (_event, request: OutputFolderRequest) => {
 	const window = BrowserWindow.fromWebContents(_event.sender) ?? focusedWindow()
-	await prepareOutputFolder(window, safeOutputPath(request.rootPath, request.segments))
+	await outputFolders.prepareFolder(window, request.rootPath, request.segments)
 })
 
 ipcMain.handle("fs:openOutputFolder", async (_event, request: OutputFolderRequest) => {
-	const target = safeOutputPath(request.rootPath, request.segments)
-	await mkdir(target, { recursive: true })
-	const error = await shell.openPath(target)
-	if (error) {
-		throw new Error(error)
-	}
+	await outputFolders.openFolder(request.rootPath, request.segments)
 })
 
 ipcMain.handle("fs:readRange", async (_event, filePath: string, offset: number, length: number) => readInputRange(filePath, offset, length))
@@ -101,19 +86,19 @@ ipcMain.handle("fs:readRange", async (_event, filePath: string, offset: number, 
 ipcMain.handle("fs:decryptFscryptRange", async (_event, request: DecryptFscryptRangeRequest) => decryptFscryptRange(request))
 
 ipcMain.handle("fs:ensureDirectory", async (_event, rootPath: string, segments: string[]) => {
-	await ensureOutputDirectory(safeOutputPath(rootPath, segments))
+	await outputFolders.ensureDirectory(rootPath, segments)
 })
 
 ipcMain.handle("fs:writeFileChunk", async (_event, request: WriteFileRequest) => {
-	await writeOutputFileChunk(request.rootPath, request.segments, request.chunk, request.append)
+	await outputFolders.writeFileChunk(request.rootPath, request.segments, request.chunk, request.append)
 })
 
 ipcMain.handle("fs:closeOutputFile", async (_event, request: OutputFolderRequest) => {
-	await closeOutputHandle(safeOutputPath(request.rootPath, request.segments))
+	await outputFolders.closeOpenFile(request.rootPath, request.segments)
 })
 
 ipcMain.handle("fs:removeOutputPath", async (_event, request: OutputFolderRequest) => {
-	await removeOutputPath(request.rootPath, request.segments)
+	await outputFolders.removePath(request.rootPath, request.segments)
 })
 
 app.whenReady().then(() => {
@@ -123,7 +108,7 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
 	void closeInputHandles()
-	void closeOutputHandles()
+	void outputFolders.closeAllOpenFiles()
 })
 
 app.on("window-all-closed", () => {

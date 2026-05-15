@@ -1,7 +1,7 @@
 {
 	"name": "fsdecrypt-gui",
 	"private": true,
-	"version": "0.1.22",
+	"version": "0.1.23",
 	"description": "Desktop GUI for extracting fscrypt APP, option, and VHD chain contents.",
 	"author": "PolarisPyra",
 	"type": "module",
@@ -13,7 +13,9 @@
 		"package": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --dir",
 		"dist": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder",
 		"dist:linux": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --linux AppImage --publish never",
-		"dist:mac": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --mac dmg --publish never",
+		"dist:mac": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --mac dmg --x64 --arm64 --publish never",
+		"dist:mac:x64": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --mac dmg --x64 --publish never",
+		"dist:mac:arm64": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --mac dmg --arm64 --publish never",
 		"dist:win": "pnpm build && cross-env NODE_OPTIONS=--no-deprecation electron-builder --win nsis --publish never"
 	},
 	"dependencies": {
@@ -49,7 +51,7 @@
 	"build": {
 		"appId": "dev.polaris.fsdecryptgui",
 		"productName": "fsdecryptGUI",
-		"artifactName": "${productName}.${ext}",
+		"artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
 		"files": [
 			"dist",
 			"dist-electron",

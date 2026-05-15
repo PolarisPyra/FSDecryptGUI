@@ -7,6 +7,13 @@ import { outputSegmentsForFolder, sanitizePathSegment } from "../../base/common/
 
 const WRITE_CHUNK_SIZE = 1 * 1024 * 1024
 
+export type OutputFolderPlan = {
+	rootPath: string
+	folderName: string
+	outputSegments: string[]
+	fileSegments: (path: string[]) => string[]
+}
+
 export function vhdDetails(result: VhdNtfsSource) {
 	return [
 		{ label: "Layers", value: result.chain.length.toString() },
@@ -16,9 +23,36 @@ export function vhdDetails(result: VhdNtfsSource) {
 	]
 }
 
+/**
+ * Creates the per-job Output Folder description shared by result metadata and file writes.
+ * `rootPath` is the user-selected Output Folder. `outputSegments` is either empty when
+ * the selected folder is already the job folder, or `[folderName]` when the job needs a
+ * child folder. Every extracted file path is appended after those segments.
+ */
+export function createOutputFolderPlan(rootPath: string, folderName: string): OutputFolderPlan {
+	const safeFolderName = sanitizePathSegment(folderName)
+	const outputSegments = outputSegmentsForFolder(rootPath, safeFolderName)
+
+	return {
+		rootPath,
+		folderName: safeFolderName,
+		outputSegments,
+		fileSegments: path => [...outputSegments, ...path.map(sanitizePathSegment)]
+	}
+}
+
+// Preparing is intentionally per-job, not per-file: it is where the user chooses
+// Replace/Merge/Cancel before any extracted file chunks are written.
+export function prepareOutputFolder(plan: OutputFolderPlan) {
+	if (plan.outputSegments.length === 0) {
+		return Promise.resolve()
+	}
+
+	return window.fsdecryptGUI.prepareOutputFolder(plan.rootPath, plan.outputSegments)
+}
+
 export function createFolderWriter(
-	rootPath: string,
-	folderName: string,
+	plan: OutputFolderPlan,
 	getTotalBytes: () => number,
 	setProgress: (progress: number) => void,
 	signal: AbortSignal,
@@ -26,12 +60,11 @@ export function createFolderWriter(
 ): NtfsExtractionWriter {
 	let written = 0
 	let lastProgressUpdate = 0
-	const outputFolder = sanitizePathSegment(folderName)
-	const outputRoot = outputSegmentsForFolder(rootPath, outputFolder)
-	const writePath = (path: string[]) => [...outputRoot, ...path.map(sanitizePathSegment)]
 
+	// The filesystem extractors speak in relative path arrays. The writer is the only
+	// renderer module that turns those arrays into IPC-ready Output Folder segments.
 	const writeFile = async (path: string[], source: ReadableByteSource) => {
-		const target = writePath(path)
+		const target = plan.fileSegments(path)
 		let wroteChunk = false
 
 		try {
@@ -44,7 +77,7 @@ export function createFolderWriter(
 					break
 				}
 
-				await window.fsdecryptGUI.writeFileChunk(rootPath, target, chunk, wroteChunk)
+				await window.fsdecryptGUI.writeFileChunk(plan.rootPath, target, chunk, wroteChunk)
 				wroteChunk = true
 				written += chunk.length
 				onBytesWritten(chunk.length)
@@ -59,17 +92,17 @@ export function createFolderWriter(
 
 			if (!wroteChunk) {
 				throwIfAborted(signal)
-				await window.fsdecryptGUI.writeFileChunk(rootPath, target, new Uint8Array(), false)
+				await window.fsdecryptGUI.writeFileChunk(plan.rootPath, target, new Uint8Array(), false)
 			}
 		} finally {
-			await window.fsdecryptGUI.closeOutputFile(rootPath, target)
+			await window.fsdecryptGUI.closeOutputFile(plan.rootPath, target)
 		}
 	}
 
 	return {
 		createDirectory: path => {
 			throwIfAborted(signal)
-			return window.fsdecryptGUI.ensureDirectory(rootPath, writePath(path))
+			return window.fsdecryptGUI.ensureDirectory(plan.rootPath, plan.fileSegments(path))
 		},
 		writeFile
 	}

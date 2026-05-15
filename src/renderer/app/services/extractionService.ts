@@ -1,10 +1,10 @@
 import type { ReadableByteSource } from "../../../fsdecrypt/byte-source"
 import type { VhdNtfsSource } from "../../../fsdecrypt/vhd"
 import { throwIfAborted } from "../../base/common/cancellation"
-import { outputSegmentsForFolder, sanitizePathSegment, stripExtension } from "../../base/common/path"
+import { stripExtension } from "../../base/common/path"
 import { PickedFile, byteSourceFromPickedFile } from "../../electron-api"
 import type { CompletedResult, MergeSelectionGroup, RunStats } from "../common/appTypes"
-import { createFolderWriter, vhdDetails } from "./extractionWriter"
+import { createFolderWriter, createOutputFolderPlan, prepareOutputFolder, vhdDetails } from "./extractionWriter"
 
 export type ExtractionServiceContext = {
 	outputRoot: string
@@ -26,12 +26,10 @@ async function extractNtfsSource(
 	onBytesWritten: (bytes: number) => void
 ): Promise<CompletedResult> {
 	const { extractNtfsContents } = await import("../../../fsdecrypt/ntfs")
-	const outputSegments = outputSegmentsForFolder(context.outputRoot, folderName)
-	if (outputSegments.length > 0) {
-		await window.fsdecryptGUI.prepareOutputFolder(context.outputRoot, outputSegments)
-	}
+	const outputFolder = createOutputFolderPlan(context.outputRoot, folderName)
+	await prepareOutputFolder(outputFolder)
 	let totalBytes = 1
-	const writer = createFolderWriter(context.outputRoot, folderName, () => totalBytes, context.setProgress, signal, onBytesWritten)
+	const writer = createFolderWriter(outputFolder, () => totalBytes, context.setProgress, signal, onBytesWritten)
 	const extracted = await extractNtfsContents(ntfsSource, writer, {
 		onLog: context.appendLog,
 		onTotalBytes: (bytes: number) => {
@@ -41,8 +39,8 @@ async function extractNtfsSource(
 		signal
 	})
 	return {
-		outputFolder: sanitizePathSegment(folderName),
-		outputSegments,
+		outputFolder: outputFolder.folderName,
+		outputSegments: outputFolder.outputSegments,
 		outputRoot: context.outputRoot,
 		outputSize: extracted.bytes,
 		details: [

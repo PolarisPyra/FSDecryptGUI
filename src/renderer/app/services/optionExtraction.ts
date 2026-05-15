@@ -3,10 +3,10 @@ import type { FscryptBootId } from "../../../fsdecrypt/fsdecrypt"
 import type { NtfsExtractionWriter } from "../../../fsdecrypt/ntfs"
 import type { VhdNtfsSource } from "../../../fsdecrypt/vhd"
 import { throwIfAborted } from "../../base/common/cancellation"
-import { outputSegmentsForFolder, sanitizePathSegment, stripExtension } from "../../base/common/path"
+import { stripExtension } from "../../base/common/path"
 import { type PickedFile, byteSourceFromPickedFile } from "../../electron-api"
 import type { CompletedResult, OptionVhdSource } from "../common/appTypes"
-import { createFolderWriter } from "./extractionWriter"
+import { createFolderWriter, createOutputFolderPlan, prepareOutputFolder } from "./extractionWriter"
 import type { ElapsedDetails, ExtractionServiceContext } from "./extractionService"
 import { filesystemFromBootSector } from "./selectionService"
 
@@ -45,8 +45,7 @@ export async function runOptionExport(
 	context.appendLog(`Detected ${fileSystem} filesystem in ${optionSource.outputFilename}`)
 
 	const folderName = stripExtension(file.name)
-	const outputFolderName = sanitizePathSegment(folderName)
-	const resultOutputSegments = outputSegmentsForFolder(context.outputRoot, outputFolderName)
+	const resultOutputFolder = createOutputFolderPlan(context.outputRoot, folderName)
 	const optionRootPrefix = ["option", optionSource.bootId.targetOption]
 	let totalBytes = Math.max(optionSource.size, 1)
 	let expandedContainerCount = 0
@@ -71,20 +70,17 @@ export async function runOptionExport(
 	}
 	setTotalBytes(totalBytes)
 	const createLazyFolderWriter = (writerFolderName: string): NtfsExtractionWriter & { outputSegments: string[]; outputFolder: string } => {
-		const outputFolder = sanitizePathSegment(writerFolderName)
-		const outputSegments = outputSegmentsForFolder(context.outputRoot, outputFolder)
-		const writer = createFolderWriter(context.outputRoot, outputFolder, () => totalBytes, context.setProgress, signal, onBytesWritten)
+		const outputFolder = createOutputFolderPlan(context.outputRoot, writerFolderName)
+		const writer = createFolderWriter(outputFolder, () => totalBytes, context.setProgress, signal, onBytesWritten)
 		let prepared = false
 		const prepare = async () => {
 			if (prepared) return
 			prepared = true
-			if (outputSegments.length > 0) {
-				await window.fsdecryptGUI.prepareOutputFolder(context.outputRoot, outputSegments)
-			}
+			await prepareOutputFolder(outputFolder)
 		}
 		return {
-			outputFolder,
-			outputSegments,
+			outputFolder: outputFolder.folderName,
+			outputSegments: outputFolder.outputSegments,
 			createDirectory: async path => {
 				await prepare()
 				await writer.createDirectory(path)
@@ -252,8 +248,8 @@ export async function runOptionExport(
 	const displayedDirectories = extracted.directories + nestedTotals.directories
 	const displayedBytes = extracted.bytes - expandedContainerBytes + nestedTotals.bytes
 	return {
-		outputFolder: outputFolderName,
-		outputSegments: resultOutputSegments,
+		outputFolder: resultOutputFolder.folderName,
+		outputSegments: resultOutputFolder.outputSegments,
 		outputRoot: context.outputRoot,
 		outputSize: displayedBytes,
 		details: [
