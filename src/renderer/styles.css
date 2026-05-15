@@ -1099,28 +1099,50 @@ progress::-webkit-progress-value {
 }
 
 .icf-status.error > svg,
-.icf-errors svg {
+.icf-issues.error svg {
 	color: var(--app-danger);
 }
 
-.icf-status.warning > svg {
+.icf-status.warning > svg,
+.icf-issues.warning svg {
 	color: var(--app-warning);
 }
 
 .icf-status span,
-.icf-errors span {
+.icf-issues span {
 	color: var(--app-text-muted);
 	font-size: 0.8rem;
 	line-height: 1.35;
 }
 
-.icf-errors {
+.icf-issues {
 	display: grid;
 	gap: 0.45rem;
 	margin-top: 0.65rem;
+	padding: 0.65rem;
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	background: var(--app-panel-soft);
 }
 
-.icf-errors div {
+.icf-issues.error {
+	border-color: var(--app-danger-border);
+	background: var(--app-danger-soft);
+}
+
+.icf-issues.warning {
+	border-color: color-mix(in srgb, var(--app-warning) 42%, var(--app-border));
+	background: color-mix(in srgb, var(--app-warning) 12%, transparent);
+}
+
+.icf-issues > strong {
+	color: var(--app-text);
+	font-size: 0.8rem;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.icf-issues div {
 	display: grid;
 	grid-template-columns: 1rem minmax(0, 1fr);
 	gap: 0.45rem;
@@ -1200,6 +1222,45 @@ progress::-webkit-progress-value {
 	margin: 0;
 }
 
+.icf-entry-title span {
+	min-width: 0;
+	color: var(--app-text-muted);
+	font-size: 0.75rem;
+	font-weight: 650;
+	white-space: nowrap;
+}
+
+.icf-code-editor {
+	display: grid;
+	grid-template-columns: 3.2rem minmax(0, 1fr);
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	background: var(--app-terminal-bg);
+}
+
+.icf-line-gutter {
+	overflow: hidden;
+	padding: 0.75rem 0.55rem;
+	border-right: 1px solid var(--app-divider);
+	background: color-mix(in srgb, var(--app-terminal-bg) 88%, var(--app-panel));
+	color: color-mix(in srgb, var(--app-terminal-fg) 52%, transparent);
+	font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.78rem;
+	line-height: 1.45;
+	text-align: right;
+	user-select: none;
+}
+
+.icf-line-gutter-content {
+	will-change: transform;
+}
+
+.icf-line-gutter span {
+	display: block;
+	height: 1.131rem;
+}
+
 .icf-editor-pane textarea {
 	flex: 1;
 	width: 100%;
@@ -1213,6 +1274,14 @@ progress::-webkit-progress-value {
 	font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, monospace;
 	font-size: 0.78rem;
 	line-height: 1.45;
+}
+
+.icf-code-textarea {
+	padding-left: 0.75rem;
+}
+
+.icf-code-textarea::placeholder {
+	color: color-mix(in srgb, var(--app-terminal-fg) 42%, transparent);
 }
 
 @media (max-width: 1080px) {

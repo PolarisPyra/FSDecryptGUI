@@ -12,19 +12,27 @@ let crcTable: Int32Array | null = null
 
 export type EncodedEntry = Uint8Array | string
 
+export type IcfGenerationIssue = {
+	source: string
+	message: string
+}
+
+type IcfGenerationBase = {
+	entries: string[]
+	errors: IcfGenerationIssue[]
+	warnings: IcfGenerationIssue[]
+}
+
 export type IcfGenerationResult =
-	| {
+	| (IcfGenerationBase & {
 			ok: true
 			header: string
-			entries: string[]
 			data: Uint8Array
 			sourceCount: number
-	  }
-	| {
+	  })
+	| (IcfGenerationBase & {
 			ok: false
-			errors: string[]
-			entries: string[]
-	  }
+	  })
 
 export function listIcfGameIds(queues: SelectionQueues) {
 	const gameIds = new Set<string>()
@@ -304,6 +312,14 @@ function encodeTime(text: string, values: Uint8Array) {
 	return true
 }
 
+function appPatchPartFromType(type: number) {
+	if (type <= 1 || (type - 1) % 0x100 !== 0) {
+		return null
+	}
+
+	return (type - 1) / 0x100
+}
+
 export function encodeIcfEntries(entries: string[], currentData: Uint8Array) {
 	const data = new Uint8Array(entries.length * ICF_BLOCK_SIZE)
 	const view = new DataView(data.buffer)
@@ -395,11 +411,12 @@ export function encodeIcfEntries(entries: string[], currentData: Uint8Array) {
 					result[i] = `Game ID mismatch: ${gameId} expected`
 					continue
 				}
-				if (part !== appPart) {
+				const standalonePatch = part > 0 && appPart === 0 && Boolean(baseName)
+				if (part !== appPart && !standalonePatch) {
 					result[i] = `APP index out of order: part ${appPart} expected`
 					continue
 				}
-				if ((part === 0 && baseName) || (part !== 0 && baseName !== appLastVersion)) {
+				if ((part === 0 && baseName) || (part !== 0 && !baseName) || (part !== 0 && !standalonePatch && baseName !== appLastVersion)) {
 					result[i] = "APP base image mismatch"
 					continue
 				}
@@ -409,12 +426,14 @@ export function encodeIcfEntries(entries: string[], currentData: Uint8Array) {
 				}
 				platformVersion.set(systemVersion)
 				if (part > 0) {
-					patchNumber += 0x100
+					patchNumber = part * 0x100 + 1
 					sectionView.setUint32(4, patchNumber, true)
 					encodeVersion(baseName!, baseVersion)
-					baseTime.set(appLastTime)
+					if (!standalonePatch) {
+						baseTime.set(appLastTime)
+					}
 				}
-				appPart++
+				appPart = part + 1
 				appLastVersion = dataName
 				appLastTime = time.slice()
 				break
@@ -472,7 +491,7 @@ export function encodeIcfEntries(entries: string[], currentData: Uint8Array) {
 
 	view.setInt32(0x20, sectionCrc, true)
 	view.setInt32(0, crc32(data.subarray(4)), true)
-	result[0] = data.subarray(0, ICF_BLOCK_SIZE)
+	result[0] = data
 	return result
 }
 
@@ -497,7 +516,6 @@ export function decodeIcfEntries(data: Uint8Array) {
 	let appLastVersion = ""
 	let appLastTime = ""
 	const seenNames: Record<string, number> = {}
-	let patchNumber = 0x101
 
 	for (let i = 1; i < numSections; i++) {
 		const section = data.subarray(i * ICF_BLOCK_SIZE, (i + 1) * ICF_BLOCK_SIZE)
@@ -533,28 +551,6 @@ export function decodeIcfEntries(data: Uint8Array) {
 				systemVersion = platformVersion
 				break
 			case 1:
-			case patchNumber:
-				if (type === patchNumber) {
-					patchNumber += 0x100
-					appPart++
-					dataName = decodeVersion(version)
-					baseName = decodeVersion(baseVersion)
-					if (baseName !== appLastVersion) {
-						appLastVersion = dataName
-						entries[i] = `! Unable to locate base APP ${baseName}`
-						continue
-					}
-					appLastVersion = dataName
-					const decodedBaseTime = decodeTime(baseTime)
-					if (decodedBaseTime !== appLastTime) {
-						appLastTime = timestamp
-						entries[i] = "! Base APP timestamp mismatch"
-						continue
-					}
-					appLastTime = timestamp
-					suffix = `${appPart}_${baseName}.app`
-				}
-
 				dataName = decodeVersion(version)
 				appLastVersion = dataName
 				appLastTime = timestamp
@@ -563,22 +559,48 @@ export function decodeIcfEntries(data: Uint8Array) {
 					continue
 				}
 				prefix = gameId
-				if (!baseName) {
-					if (appPart) {
-						entries[i] = "! Redundant base APP"
-						continue
-					}
-					suffix = "0.app"
+				if (appPart) {
+					entries[i] = "! Redundant base APP"
+					continue
 				}
+				suffix = "0.app"
 				break
 			case 2:
 				suffix = "0.opt"
 				prefix = gameId
 				dataName = String.fromCharCode(...Array.from(version))
 				break
-			default:
+			default: {
+				const patchPart = appPatchPartFromType(type)
+				if (patchPart !== null) {
+					appPart = patchPart
+					dataName = decodeVersion(version)
+					baseName = decodeVersion(baseVersion)
+					if (appLastVersion && baseName !== appLastVersion) {
+						appLastVersion = dataName
+						entries[i] = `! Unable to locate base APP ${baseName}`
+						continue
+					}
+					appLastVersion = dataName
+					const decodedBaseTime = decodeTime(baseTime)
+					if (appLastTime && decodedBaseTime !== appLastTime) {
+						appLastTime = timestamp
+						entries[i] = "! Base APP timestamp mismatch"
+						continue
+					}
+					appLastTime = timestamp
+					suffix = `${appPart}_${baseName}.app`
+					if (systemVersion !== null && platformVersion !== systemVersion) {
+						entries[i] = "! SYSTEM version mismatch"
+						continue
+					}
+					prefix = gameId
+					break
+				}
+
 				entries[i] = `! Unknown Type: ${type.toString(16)}`
 				continue
+			}
 		}
 
 		entries[i] = `${prefix}_${dataName}_${timestamp}_${suffix}`
@@ -602,7 +624,6 @@ export function inferIcfFilename(data: Uint8Array) {
 	const platformId = String.fromCharCode(header[4], header[5], header[6])
 	let romVersion = ""
 	let dataVersion = ""
-	let patchNumber = 0x101
 	const numSections = data.length / ICF_BLOCK_SIZE
 
 	for (let i = 1; i < numSections; i++) {
@@ -616,10 +637,6 @@ export function inferIcfFilename(data: Uint8Array) {
 		const version = section.subarray(0x20, 0x24)
 		switch (type) {
 			case 1:
-			case patchNumber:
-				if (type === patchNumber) {
-					patchNumber += 0x100
-				}
 				romVersion = decodeVersion(version)
 				break
 			case 2: {
@@ -629,6 +646,11 @@ export function inferIcfFilename(data: Uint8Array) {
 				}
 				break
 			}
+			default:
+				if (appPatchPartFromType(type) !== null) {
+					romVersion = decodeVersion(version)
+				}
+				break
 		}
 	}
 
@@ -648,8 +670,54 @@ function comparePickedFile(left: PickedFile, right: PickedFile) {
 	return left.path.localeCompare(right.path)
 }
 
+function appLayerSource(layer: NonNullable<SelectionQueues["container"]["groups"][number]["appLayers"][number]>) {
+	if (!layer.bootId) {
+		return `APP ${layer.file.name}`
+	}
+
+	return `APP ${layer.bootId.gameId} part ${layer.bootId.sequenceNumber} (${layer.file.name})`
+}
+
+function optionLayerSource(layer: NonNullable<SelectionQueues["option"]["groups"][number]["optionLayers"][number]>) {
+	if (!layer.bootId) {
+		return `OPT ${layer.file.name}`
+	}
+
+	return `OPT ${layer.bootId.gameId} ${layer.bootId.targetOption} (${layer.file.name})`
+}
+
+function rawVhdSource(files: PickedFile[], fallback: string) {
+	if (files.length === 1) {
+		return `VHD ${files[0].name}`
+	}
+
+	return fallback
+}
+
+function validateAppChain(
+	label: string,
+	layers: Array<NonNullable<SelectionQueues["container"]["groups"][number]["appLayers"][number]>>,
+	errors: IcfGenerationIssue[]
+) {
+	const sequenceNumbers = layers.map(layer => layer.bootId?.sequenceNumber).filter((value): value is number => value !== undefined)
+	if (sequenceNumbers.length === 0) return
+
+	const highestSequence = Math.max(...sequenceNumbers)
+	for (let index = 0; index <= highestSequence; index++) {
+		if (!sequenceNumbers.includes(index)) {
+			errors.push({ source: label, message: `APP chain must include parent/update part ${index}` })
+		}
+	}
+
+	const duplicateSequence = sequenceNumbers.find((value, index) => sequenceNumbers.indexOf(value) !== index)
+	if (duplicateSequence !== undefined) {
+		errors.push({ source: label, message: `APP chain contains duplicate part ${duplicateSequence}` })
+	}
+}
+
 export function generateIcfFromQueues(queues: SelectionQueues, targetGameId?: string): IcfGenerationResult {
-	const errors: string[] = []
+	const errors: IcfGenerationIssue[] = []
+	const warnings: IcfGenerationIssue[] = []
 	const appLayersByPath = new Map<string, NonNullable<SelectionQueues["container"]["groups"][number]["appLayers"][number]>>()
 	const optionLayersByPath = new Map<string, NonNullable<SelectionQueues["option"]["groups"][number]["optionLayers"][number]>>()
 
@@ -657,14 +725,25 @@ export function generateIcfFromQueues(queues: SelectionQueues, targetGameId?: st
 		if (!group.selected) continue
 		const matchingLayers = targetGameId ? group.appLayers.filter(layer => layer.bootId?.gameId === targetGameId) : group.appLayers
 		if (targetGameId && matchingLayers.length === 0) continue
-		if (group.warning) {
-			errors.push(`${group.label}: ${group.warning}`)
+		const layersWithErrors = matchingLayers.filter(layer => layer.error)
+		if (layersWithErrors.length === 0 && group.warning) {
+			const warningLayers = matchingLayers.length > 0 ? matchingLayers : group.appLayers
+			if (warningLayers.length > 0) {
+				for (const layer of warningLayers) {
+					warnings.push({ source: appLayerSource(layer), message: group.warning })
+				}
+			} else {
+				warnings.push({ source: group.label, message: group.warning })
+			}
 		}
 		if (group.rawVhds.length > 0 && group.appLayers.length === 0) {
-			errors.push(`${group.label}: raw VHD layers do not contain APP boot metadata for ICF.`)
+			errors.push({ source: rawVhdSource(group.rawVhds, group.label), message: "raw VHD layers do not contain APP boot metadata for ICF" })
 		}
-		for (const layer of matchingLayers) {
-			appLayersByPath.set(layer.file.path, layer)
+		if (matchingLayers.length > 0) {
+			validateAppChain(group.label, matchingLayers, errors)
+			for (const layer of matchingLayers) {
+				appLayersByPath.set(layer.file.path, layer)
+			}
 		}
 	}
 
@@ -672,8 +751,16 @@ export function generateIcfFromQueues(queues: SelectionQueues, targetGameId?: st
 		if (!group.selected) continue
 		const matchingLayers = targetGameId ? group.optionLayers.filter(layer => layer.bootId?.gameId === targetGameId) : group.optionLayers
 		if (targetGameId && matchingLayers.length === 0) continue
-		if (group.warning) {
-			errors.push(`${group.label}: ${group.warning}`)
+		const layersWithErrors = matchingLayers.filter(layer => layer.error)
+		if (layersWithErrors.length === 0 && group.warning) {
+			const warningLayers = matchingLayers.length > 0 ? matchingLayers : group.optionLayers
+			if (warningLayers.length > 0) {
+				for (const layer of warningLayers) {
+					warnings.push({ source: optionLayerSource(layer), message: group.warning })
+				}
+			} else {
+				warnings.push({ source: group.label, message: group.warning })
+			}
 		}
 		for (const layer of matchingLayers) {
 			optionLayersByPath.set(layer.file.path, layer)
@@ -694,20 +781,24 @@ export function generateIcfFromQueues(queues: SelectionQueues, targetGameId?: st
 
 	for (const layer of appLayers) {
 		if (layer.error || !layer.bootId) {
-			errors.push(`${layer.file.name}: ${layer.error ?? "missing APP boot metadata"}`)
+			errors.push({ source: appLayerSource(layer), message: layer.error ?? "missing APP boot metadata" })
 		}
 	}
 
 	for (const layer of optionLayers) {
 		if (layer.error || !layer.bootId) {
-			errors.push(`${layer.file.name}: ${layer.error ?? "missing OPT boot metadata"}`)
+			errors.push({ source: optionLayerSource(layer), message: layer.error ?? "missing OPT boot metadata" })
 		} else if (layer.bootId.sequenceNumber !== 0) {
-			errors.push(`${layer.file.name}: layered OPT entries cannot be represented in ICF.`)
+			errors.push({ source: optionLayerSource(layer), message: "layered OPT entries cannot be represented in ICF" })
 		}
 	}
 
-	if (appLayers.length === 0 && optionLayers.length === 0) {
-		errors.push("Select at least one APP or OPT before generating an ICF.")
+	if (appLayers.length === 0) {
+		errors.push({ source: "Selection", message: "select one complete parent APP chain before generating an ICF" })
+	}
+
+	if (optionLayers.length === 0) {
+		errors.push({ source: "Selection", message: "select at least one OPT with the same game code as the APP" })
 	}
 
 	const bootIds = [...appLayers.map(layer => layer.bootId), ...optionLayers.map(layer => layer.bootId)].filter(Boolean)
@@ -715,26 +806,10 @@ export function generateIcfFromQueues(queues: SelectionQueues, targetGameId?: st
 	const platformIds = new Set(bootIds.map(bootId => bootId!.osId).filter(Boolean))
 
 	if (gameIds.size > 1) {
-		errors.push(`ICF can only describe one game ID. Found ${[...gameIds].join(", ")}.`)
+		errors.push({ source: "Selection", message: `ICF can only describe one game ID. Found ${[...gameIds].join(", ")}` })
 	}
 	if (platformIds.size > 1) {
-		errors.push(`ICF can only describe one platform ID. Found ${[...platformIds].join(", ")}.`)
-	}
-
-	if (appLayers.length > 0) {
-		const sequenceNumbers = appLayers.map(layer => layer.bootId?.sequenceNumber).filter((value): value is number => value !== undefined)
-		const expected = [...sequenceNumbers].sort((left, right) => left - right)
-		for (let index = 0; index < expected.length; index++) {
-			if (expected[index] !== index) {
-				errors.push(`APP chain must be contiguous from part 0. Missing part ${index}.`)
-				break
-			}
-		}
-
-		const duplicateSequence = sequenceNumbers.find((value, index) => sequenceNumbers.indexOf(value) !== index)
-		if (duplicateSequence !== undefined) {
-			errors.push(`APP chain contains duplicate part ${duplicateSequence}.`)
-		}
+		errors.push({ source: "Selection", message: `ICF can only describe one platform ID. Found ${[...platformIds].join(", ")}` })
 	}
 
 	const gameId = [...gameIds][0]
@@ -744,34 +819,31 @@ export function generateIcfFromQueues(queues: SelectionQueues, targetGameId?: st
 
 	for (const layer of appLayers) {
 		if (!layer.bootId) continue
-		const bootId = layer.bootId
-		const version = versionText(bootId.targetVersion)
-		const timestamp = timestampText(bootId.targetTimestamp)
-		const baseVersion = bootId.sequenceNumber > 0 ? `_${versionText(bootId.sourceVersion)}` : ""
-		entries.push(`${bootId.gameId}_${version}_${timestamp}_${bootId.sequenceNumber}${baseVersion}.app`)
+		entries.push(layer.file.name)
 	}
 
 	for (const layer of optionLayers) {
 		if (!layer.bootId) continue
-		const bootId = layer.bootId
-		entries.push(`${bootId.gameId}_${bootId.targetOption}_${timestampText(bootId.targetTimestamp)}_0.opt`)
+		entries.push(layer.file.name)
 	}
 
-	if (errors.length > 0 || !gameId || !platformId) {
-		if (!gameId) errors.push("Could not infer game ID from selected files.")
-		if (!platformId) errors.push("Could not infer platform ID from selected files.")
-		return { ok: false, errors, entries }
+	if (errors.length > 0 || warnings.length > 0 || !gameId || !platformId) {
+		if (!gameId) errors.push({ source: "Selection", message: "could not infer game ID from selected files" })
+		if (!platformId) errors.push({ source: "Selection", message: "could not infer platform ID from selected files" })
+		return { ok: false, errors, warnings, entries }
 	}
 
 	const encoded = encodeCurrentEntries(entries, new Uint8Array(ICF_BLOCK_SIZE))
 	if (encoded.error || !encoded.data) {
-		return { ok: false, errors: [encoded.error ?? "Could not encode ICF"], entries }
+		return { ok: false, errors: [{ source: "ICF", message: encoded.error ?? "could not encode ICF" }], warnings, entries }
 	}
 
 	return {
 		ok: true,
 		header,
 		entries,
+		errors,
+		warnings,
 		data: encoded.data,
 		sourceCount: appLayers.length + optionLayers.length
 	}

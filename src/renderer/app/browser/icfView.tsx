@@ -16,10 +16,16 @@ import {
 	xxdDecode,
 	xxdEncode
 } from "../services/icf"
+import type { IcfGenerationIssue } from "../services/icf"
 import type { SelectionQueues } from "../services/selectionQueue"
 
 const STORAGE_KEY = "fsdecryptGUI.icfEditor"
 const DEFAULT_ENTRIES = ["SXXXACA0"]
+const ENTRY_PLACEHOLDER = [
+	"SDEDACA0",
+	"SDED_1.34.00_20211102142042_2_1.33.00.app",
+	"SDED_A011_20200902105636_0.opt"
+].join("\n")
 
 type EditorState = {
 	data: Uint8Array
@@ -72,8 +78,24 @@ function statusClass(error: string, warning: string) {
 	return "icf-status ready"
 }
 
+function issueText(issue: IcfGenerationIssue) {
+	return `${issue.source}: ${issue.message}`
+}
+
+function entryValidationMessage(encoded: ReturnType<typeof encodeIcfEntries>) {
+	for (let index = 1; index < encoded.length; index++) {
+		if (typeof encoded[index] === "string") {
+			return `Line ${index + 1}: ${encoded[index]}`
+		}
+	}
+
+	return typeof encoded[0] === "string" ? `Line 1: ${encoded[0]}` : ""
+}
+
 export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 	const [state, setState] = useState<EditorState>(() => getInitialState())
+	const [entryText, setEntryText] = useState(() => state.entries.join("\n"))
+	const [entryScrollTop, setEntryScrollTop] = useState(0)
 	const [dumpValue, setDumpValue] = useState("")
 	const [isBusy, setIsBusy] = useState(false)
 	const [showDecryptedDump, setShowDecryptedDump] = useState(true)
@@ -82,6 +104,10 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 	const [targetGameId, setTargetGameId] = useState("")
 	const effectiveTargetGameId = gameIds.length > 1 ? targetGameId || gameIds[0] : undefined
 	const generation = useMemo(() => generateIcfFromQueues(queues, effectiveTargetGameId), [effectiveTargetGameId, queues])
+	const entryLineNumbers = useMemo(
+		() => Array.from({ length: Math.max(1, entryText.split("\n").length) }, (_, index) => index + 1),
+		[entryText]
+	)
 
 	const persist = useCallback((data: Uint8Array) => {
 		window.localStorage.setItem(STORAGE_KEY, binToHex(data))
@@ -90,12 +116,15 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 	const importData = useCallback(
 		(data: Uint8Array, nextStatus = "", warning = "") => {
 			const next = cloneData(data)
+			const entries = decodeIcfEntries(next)
 			setState({
 				data: next,
-				entries: decodeIcfEntries(next),
+				entries,
 				error: "",
 				warning
 			})
+			setEntryText(entries.join("\n"))
+			setEntryScrollTop(0)
 			setStatus(nextStatus)
 			persist(next)
 		},
@@ -182,10 +211,10 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 
 	const handleEntriesChange = useCallback(
 		(value: string) => {
+			setEntryText(value)
 			const entries = value
 				.split("\n")
 				.map(line => line.trim())
-				.filter((line, index, lines) => index < lines.length - 1 || line.length > 0)
 
 			if (entries.length === 0) {
 				entries.push("")
@@ -196,7 +225,7 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 				setState(current => ({
 					...current,
 					entries,
-					error: encoded[0] as string
+					error: entryValidationMessage(encoded)
 				}))
 				setStatus("")
 				return
@@ -214,6 +243,12 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 		},
 		[persist, state.data]
 	)
+
+	const handleEntriesBlur = useCallback(() => {
+		if (!state.error) {
+			setEntryText(state.entries.join("\n"))
+		}
+	}, [state.entries, state.error])
 
 	const handleDumpChange = useCallback(
 		async (value: string) => {
@@ -241,12 +276,15 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 				}
 			}
 
+			const entries = decodeIcfEntries(data)
 			setState({
 				data: cloneData(data),
-				entries: decodeIcfEntries(data),
+				entries,
 				error: "",
 				warning: getIcfSanityError(data) ?? ""
 			})
+			setEntryText(entries.join("\n"))
+			setEntryScrollTop(0)
 			setStatus("")
 		},
 		[showDecryptedDump]
@@ -263,7 +301,7 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 		try {
 			const encoded = encodeIcfEntries(state.entries, state.data)
 			if (typeof encoded[0] === "string") {
-				setState(current => ({ ...current, error: encoded[0] as string }))
+				setState(current => ({ ...current, error: entryValidationMessage(encoded) }))
 				setStatus("Save failed: entries need to be valid before writing ICF.")
 				return
 			}
@@ -281,7 +319,10 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 				content: encrypted
 			})
 			if (savedPath) {
-				setState({ data: nextData, entries: decodeIcfEntries(nextData), error: "", warning: "" })
+				const entries = decodeIcfEntries(nextData)
+				setState({ data: nextData, entries, error: "", warning: "" })
+				setEntryText(entries.join("\n"))
+				setEntryScrollTop(0)
 				persist(nextData)
 				setStatus(`Saved ${savedPath}`)
 			}
@@ -303,12 +344,19 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 
 	const handleReset = useCallback(() => {
 		const data = defaultData()
+		const entries = decodeIcfEntries(data)
 		window.localStorage.removeItem(STORAGE_KEY)
-		setState({ data, entries: decodeIcfEntries(data), error: "", warning: "" })
+		setState({ data, entries, error: "", warning: "" })
+		setEntryText(entries.join("\n"))
+		setEntryScrollTop(0)
 		setStatus("")
 	}, [])
 
 	const busy = isBusy || isExtracting
+	const firstGenerationIssue = generation.errors[0] ?? generation.warnings[0]
+	const generationStatusClass = generation.ok ? "icf-status ready" : generation.errors.length > 0 ? "icf-status error" : "icf-status warning"
+	const generationStatusIcon = generation.ok ? <CheckCircle2 size={16} /> : generation.errors.length > 0 ? <ShieldAlert size={16} /> : <AlertTriangle size={16} />
+	const generationStatusTitle = generation.ok ? "Can generate ICF" : generation.errors.length > 0 ? "ICF generation blocked" : "ICF has warnings"
 
 	return (
 		<main className="workspace icf-workspace">
@@ -352,24 +400,38 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 							))}
 						</select>
 					) : null}
-					<div className={generation.ok ? "icf-status ready" : "icf-status error"}>
-						{generation.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+					<div className={generationStatusClass}>
+						{generationStatusIcon}
 						<div>
-							<strong>{generation.ok ? "Can generate ICF" : "Not ready"}</strong>
+							<strong>{generationStatusTitle}</strong>
 							<span>
 								{generation.ok
 									? `${generation.sourceCount.toLocaleString()} selected APP/OPT entr${generation.sourceCount === 1 ? "y" : "ies"} available`
-									: generation.errors[0]}
+									: firstGenerationIssue
+										? issueText(firstGenerationIssue)
+										: "Selected files are not ready for ICF generation"}
 							</span>
 						</div>
 					</div>
 
-					{!generation.ok && generation.errors.length > 1 ? (
-						<div className="icf-errors">
-							{generation.errors.map(error => (
-								<div key={error}>
+					{generation.errors.length > 0 ? (
+						<div className="icf-issues error">
+							<strong>Errors</strong>
+							{generation.errors.map((error, index) => (
+								<div key={`${issueText(error)}-${index}`}>
 									<AlertTriangle size={14} />
-									<span>{error}</span>
+									<span>{issueText(error)}</span>
+								</div>
+							))}
+						</div>
+					) : null}
+					{generation.warnings.length > 0 ? (
+						<div className="icf-issues warning">
+							<strong>Warnings</strong>
+							{generation.warnings.map((warning, index) => (
+								<div key={`${issueText(warning)}-${index}`}>
+									<AlertTriangle size={14} />
+									<span>{issueText(warning)}</span>
 								</div>
 							))}
 						</div>
@@ -384,10 +446,29 @@ export function IcfView({ queues, isBusy: isExtracting }: IcfViewProps) {
 			</section>
 
 			<section className="main-panel icf-editor-pane">
-				<div className="log-title">
+				<div className="log-title icf-entry-title">
 					<label>Entries</label>
+					<span>One entry per line</span>
 				</div>
-				<textarea value={state.entries.join("\n")} onChange={event => handleEntriesChange(event.target.value)} spellCheck={false} />
+				<div className="icf-code-editor">
+					<div className="icf-line-gutter" aria-hidden="true">
+						<div className="icf-line-gutter-content" style={{ transform: `translateY(-${entryScrollTop}px)` }}>
+							{entryLineNumbers.map(lineNumber => (
+								<span key={lineNumber}>{lineNumber}</span>
+							))}
+						</div>
+					</div>
+					<textarea
+						className="icf-code-textarea"
+						value={entryText}
+						onChange={event => handleEntriesChange(event.target.value)}
+						onBlur={handleEntriesBlur}
+						onScroll={event => setEntryScrollTop(event.currentTarget.scrollTop)}
+						placeholder={ENTRY_PLACEHOLDER}
+						spellCheck={false}
+						aria-label="ICF entries, one entry per line"
+					/>
+				</div>
 			</section>
 
 			<section className="log-panel icf-editor-pane">
