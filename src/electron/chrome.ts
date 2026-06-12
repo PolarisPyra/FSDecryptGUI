@@ -130,13 +130,14 @@ function allowedAppUrl(url: string) {
 export function installSecurityHandlers() {
 	session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
 		const connectSrc = isDev && devServerUrl ? `'self' ${devServerUrl.origin} ws://${devServerUrl.host}` : "'self'"
+		const scriptSrc = isDev ? "'self' 'unsafe-inline'" : "'self'"
 		callback({
 			responseHeaders: {
 				...details.responseHeaders,
 				"Content-Security-Policy": [
 					[
 						"default-src 'self'",
-						"script-src 'self'",
+						`script-src ${scriptSrc}`,
 						"style-src 'self' 'unsafe-inline'",
 						"img-src 'self' data:",
 						"font-src 'self' data:",
